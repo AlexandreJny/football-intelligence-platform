@@ -1,0 +1,13 @@
+# Ignorer tous les dossiers nommés data
+**/data/
+**/database/
+
+# Environnement virtuel Python
+.venv312/
+
+# Cache Python
+__pycache__/
+*.py[cod]
+
+# Variables d'environnement
+.env
