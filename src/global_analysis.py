@@ -1,16 +1,16 @@
-
 from pathlib import Path
-
 import duckdb
 import pandas as pd
-
 
 MONACO_TEAM_ID = 129
 
 
 def load_events(database_path, team_id=MONACO_TEAM_ID):
     """
-    Load enriched events for a specific team from DuckDB.
+    Load all events from matches played by a specific team.
+
+    This includes events from both the selected team
+    and its opponents.
     """
 
     database_path = Path(database_path)
@@ -26,11 +26,18 @@ def load_events(database_path, team_id=MONACO_TEAM_ID):
     )
 
     try:
+
         events = connection.execute(
             """
-            SELECT *
-            FROM events_enriched
-            WHERE team_id = ?
+            SELECT e.*
+            FROM events_enriched e
+
+            INNER JOIN match_teams mt
+                ON e.match_id = mt.match_id
+
+            WHERE mt.team_id = ?
+
+            ORDER BY e.match_id, e.index
             """,
             [team_id]
         ).fetchdf()
@@ -274,6 +281,10 @@ def run_offensive_analysis(database_path, team_id=MONACO_TEAM_ID):
     )
 
     shots = get_shots(events)
+
+    shots = shots[
+        shots["team_id"] == team_id
+    ].copy()
 
     metrics = calculate_shot_metrics(shots)
 

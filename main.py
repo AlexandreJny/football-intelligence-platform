@@ -3,6 +3,10 @@ from pathlib import Path
 
 from src.statsbomb_loader import load_season
 from src.events import build_events
+from src.enrichment import (
+    build_events_enriched,
+    save_enriched_tables
+)
 from src.relational import build_relational_tables
 
 from src.database import (
@@ -75,7 +79,6 @@ def main():
             connection,
             processed_directory
         )
-
         # 7. Contrôler les clés primaires
         check_primary_keys(connection)
 
@@ -85,10 +88,27 @@ def main():
         # 9. Résumé de la base
         display_database_summary(connection)
 
+        # 10. Construction des tables enrichies
+
+        print("\n===== CONSTRUCTION EVENTS ENRICHED =====")
+
+        enriched_tables = build_events_enriched(season_df)
+
+        connection = create_database(database_path)
+
+        try:
+            save_enriched_tables(
+                connection,
+                enriched_tables
+            )
+
+        finally:
+            connection.close()
+
     finally:
         connection.close()
 
-    # 10. Analyse offensive
+    # 11. Analyse offensive
     print("\n===== ANALYSE OFFENSIVE AS MONACO =====")
 
     results = run_offensive_analysis(
