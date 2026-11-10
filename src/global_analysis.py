@@ -82,6 +82,7 @@ def get_shots(events):
     return shots.reset_index(drop=True)
 
 
+
 def calculate_shot_metrics(shots):
     """
     Calculate general offensive shooting metrics.
@@ -91,9 +92,14 @@ def calculate_shot_metrics(shots):
 
     total_xg = shots["statsbomb_xg"].sum()
 
-    average_xg = shots["statsbomb_xg"].mean()
-
+    # Number of distinct matches
     matches = shots["match_id"].nunique()
+
+    # Average xG per match
+    average_xg = (
+        total_xg / matches
+        if matches > 0 else 0
+    )
 
     xg_per_shot = (
         total_xg / total_shots
@@ -124,12 +130,8 @@ def calculate_shot_metrics(shots):
     }
 
 
-def analyze_shot_zones(shots):
-    """
-    Classify shots by their distance from the nearest goal.
 
-    StatsBomb pitch dimensions: 120 x 80.
-    """
+def analyze_shot_zones(shots):
 
     zones = shots.copy()
 
@@ -143,7 +145,6 @@ def analyze_shot_zones(shots):
         errors="coerce"
     )
 
-    # Distance from the nearest goal line.
     distance_to_goal = pd.concat(
         [x, 120 - x],
         axis=1
@@ -154,40 +155,51 @@ def analyze_shot_zones(shots):
         & y.between(0, 80)
     )
 
-    zones["shot_zone"] = "Outside penalty area"
+    # Outside penalty area
+    outside = (
+        valid
+        & (distance_to_goal > 18)
+        & ~y.between(30, 50)
+    )
 
-    # Approximate penalty area on either side.
-    penalty_area = (
+    # Central outside area
+    central_outside = (
+        valid
+        & (distance_to_goal > 18)
+        & y.between(30, 50)
+    )
+
+    # Penalty area
+    penalty = (
         valid
         & (distance_to_goal <= 18)
-        & y.between(18, 62)
+        & ~y.between(30, 50)
     )
 
-    zones.loc[
-        penalty_area,
-        "shot_zone"
-    ] = "Penalty area"
-
-    # Central area of the pitch.
-    central = (
+    # Central penalty area
+    central_penalty = (
         valid
-        & y.between(26.67, 53.33)
+        & (distance_to_goal <= 18)
+        & y.between(30, 50)
     )
 
-    zones.loc[
-        central & penalty_area,
-        "shot_zone"
-    ] = "Central penalty area"
+    zones["shot_zone"] = "Unknown"
 
-    zones.loc[
-        central & ~penalty_area,
-        "shot_zone"
-    ] = "Central outside area"
+    zones.loc[outside, "shot_zone"] = (
+        "Outside penalty area"
+    )
 
-    zones.loc[
-        ~valid,
-        "shot_zone"
-    ] = "Unknown"
+    zones.loc[central_outside, "shot_zone"] = (
+        "Central outside area"
+    )
+
+    zones.loc[penalty, "shot_zone"] = (
+        "Penalty area"
+    )
+
+    zones.loc[central_penalty, "shot_zone"] = (
+        "Central penalty area"
+    )
 
     summary = (
         zones.groupby("shot_zone")
@@ -200,18 +212,17 @@ def analyze_shot_zones(shots):
     )
 
     summary["shot_percentage"] = (
-        summary["total_shots"]
-        / len(shots) * 100
+        summary["total_shots"] / len(shots) * 100
         if len(shots) else 0
     )
 
     return summary
 
 
-
 def analyze_shot_assists(events, shots):
     """
     Link passes to shots using assisted_shot_id.
+    Return descriptive information without IDs.
     """
 
     passes = events[
@@ -224,7 +235,6 @@ def analyze_shot_assists(events, shots):
             "event_id",
             "match_id",
             "team_id",
-            "player_id",
             "player_name",
             "assisted_shot_id"
         ]
@@ -232,7 +242,6 @@ def analyze_shot_assists(events, shots):
         "event_id": "pass_event_id",
         "match_id": "pass_match_id",
         "team_id": "pass_team_id",
-        "player_id": "passer_id",
         "player_name": "passer_name"
     })
 
@@ -241,7 +250,6 @@ def analyze_shot_assists(events, shots):
             "event_id",
             "match_id",
             "team_id",
-            "player_id",
             "player_name",
             "statsbomb_xg",
             "outcome_name"
@@ -250,7 +258,6 @@ def analyze_shot_assists(events, shots):
         "event_id": "shot_event_id",
         "match_id": "shot_match_id",
         "team_id": "shot_team_id",
-        "player_id": "shooter_id",
         "player_name": "shooter_name"
     })
 
@@ -265,6 +272,17 @@ def analyze_shot_assists(events, shots):
         (linked["pass_match_id"] == linked["shot_match_id"])
         & (linked["pass_team_id"] == linked["shot_team_id"])
     ].copy()
+
+    # Keep only descriptive columns
+    linked = linked[
+        [
+            "pass_match_id",
+            "passer_name",
+            "shooter_name",
+            "statsbomb_xg",
+            "outcome_name"
+        ]
+    ]
 
     return linked
 

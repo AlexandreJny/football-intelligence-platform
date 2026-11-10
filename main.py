@@ -19,6 +19,7 @@ from src.database import (
 
 from src.global_analysis import run_offensive_analysis
 
+from dashboard.config import DB_PATH, TEAM_ID
 
 def main():
 
@@ -66,7 +67,7 @@ def main():
         print(f"[OK] {name} : {len(df)} lignes")
 
     # 5. Créer / ouvrir DuckDB
-    database_path = Path("database/football.duckdb")
+    database_path = DB_PATH
 
     connection = create_database(database_path)
 
@@ -113,7 +114,7 @@ def main():
 
     results = run_offensive_analysis(
         database_path=database_path,
-        team_id=129
+        team_id=TEAM_ID
     )
 
     print("\n--- INDICATEURS OFFENSIFS ---")
