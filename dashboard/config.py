@@ -5,7 +5,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 
 DB_PATH = ROOT_DIR / "database" / "football.duckdb"
 
-APP_TITLE = "Football Intelligence | Offensive Analysis"
+APP_TITLE = "Football Intelligence Platform"
 
 TEAM_ID = 129
 TEAM_NAME = "AS Monaco"

@@ -17,7 +17,10 @@ from src.database import (
     display_database_summary
 )
 
-from src.global_analysis import run_offensive_analysis
+from src.global_analysis import (
+    run_offensive_analysis,
+    run_progression_analysis
+)
 
 from dashboard.config import DB_PATH, TEAM_ID
 
@@ -135,6 +138,53 @@ def main():
     print(
         results["assists"].to_string(index=False)
     )
+
+    
+    # 12. Analyse de progression
+    print("\n===== ANALYSE DE PROGRESSION AS MONACO =====")
+
+
+
+    progression_results = run_progression_analysis(
+        database_path=database_path,
+        team_id=TEAM_ID
+    )
+
+    # Progressive passes
+    print("\n--- PROGRESSIVE PASSES ---")
+
+    print(
+        progression_results["progressive_passes"]["summary"]
+    )
+
+    # Progressive carries
+    print("\n--- PROGRESSIVE CARRIES ---")
+
+    print(
+        progression_results["progressive_carries"]["summary"]
+    )
+
+    # Passes into final third
+    print("\n--- PASSES INTO FINAL THIRD ---")
+
+    print(
+        progression_results["final_third_passes"]["summary"]
+    )
+
+    # Potential line-breaking passes
+    print("\n--- POTENTIAL LINE-BREAKING PASSES ---")
+
+    print(
+        progression_results["line_breaking_passes"]["summary"]
+    )
+
+    # Between-the-lines receptions
+    print("\n--- BETWEEN-THE-LINES RECEPTIONS ---")
+
+    print(
+        progression_results["between_lines_receptions"]["summary"]
+    )
+
 
     print("\n===== PIPELINE TERMINÉ =====")
 
