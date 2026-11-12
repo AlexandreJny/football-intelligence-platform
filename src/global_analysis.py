@@ -275,6 +275,113 @@ def prepare_line_breaking_passes(passes, team_id):
 
 
 
+
+
+def _get_defensive_events(events, event_type, extra_filter=None):
+    """
+    Extract a defensive event type from the full event dataset.
+    """
+    required_columns = [
+        "type",
+        "event_id",
+        "match_id",
+        "team_id",
+        "player_id",
+        "player_name",
+        "location_x",
+        "location_y"
+    ]
+
+    missing = [
+        col for col in required_columns
+        if col not in events.columns
+    ]
+
+    if missing:
+        raise ValueError(
+            f"Colonnes manquantes pour {event_type} : {missing}"
+        )
+
+    result = events[
+        events["type"].str.lower() == event_type.lower()
+    ].copy()
+
+    if extra_filter is not None:
+        result = result[extra_filter(result)].copy()
+
+    for col in ["location_x", "location_y"]:
+        result[col] = pd.to_numeric(
+            result[col],
+            errors="coerce"
+        )
+
+    result = result.dropna(
+        subset=["location_x", "location_y"]
+    )
+
+    return result.reset_index(drop=True)
+
+
+def get_interceptions(events):
+    """Extract all interceptions."""
+    return _get_defensive_events(
+        events,
+        "Interception"
+    )
+
+
+def get_tackles(events):
+    """
+    Extract tackles from Duel events.
+
+    type_name distinguishes tackles from aerial duels.
+    """
+    if "type_name" not in events.columns:
+        raise ValueError(
+            "La colonne 'type_name' est nécessaire pour identifier les tacles."
+        )
+
+    return _get_defensive_events(
+        events,
+        "Duel",
+        extra_filter=lambda df:
+            df["type_name"].str.lower() == "tackle"
+    )
+
+
+def get_pressures(events):
+    """Extract all pressure events."""
+    return _get_defensive_events(
+        events,
+        "Pressure"
+    )
+
+
+def get_recoveries(events):
+    """Extract all ball recovery events."""
+    return _get_defensive_events(
+        events,
+        "Ball Recovery"
+    )
+
+
+def get_blocks(events):
+    """Extract all block events."""
+    return _get_defensive_events(
+        events,
+        "Block"
+    )
+
+
+def get_fouls(events):
+    """Extract all committed fouls."""
+    return _get_defensive_events(
+        events,
+        "Foul Committed"
+    )
+
+
+
 def detect_line_breaking_passes(
     prepared_passes,
     min_progression=10,
@@ -973,6 +1080,255 @@ def analyze_between_lines_receptions(events, team_id):
     }
 
 
+def analyze_defensive_events(defensive_events, team_id):
+    """
+    Calculate basic defensive statistics for one team.
+    """
+
+    team_events = defensive_events[
+        defensive_events["team_id"] == team_id
+    ].copy()
+
+    total = len(team_events)
+
+    summary = {
+        "total_events": total,
+        "matches": (
+            team_events["match_id"].nunique()
+            if total > 0 else 0
+        ),
+        "players_involved": (
+            team_events["player_id"].nunique()
+            if total > 0 else 0
+        )
+    }
+
+    if "outcome_name" in team_events.columns:
+        summary["outcomes"] = (
+            team_events["outcome_name"]
+            .fillna("Unknown")
+            .value_counts()
+            .to_dict()
+        )
+
+    return {
+        "summary": summary,
+        "events": team_events.reset_index(drop=True)
+    }
+
+
+def analyze_recovery_zones(recoveries, team_id):
+    """
+    Analyze ball recoveries by pre-existing location bucket.
+    """
+
+    team_recoveries = recoveries[
+        recoveries["team_id"] == team_id
+    ].copy()
+
+    if "location_bucket" not in team_recoveries.columns:
+        raise ValueError(
+            "La colonne 'location_bucket' est nécessaire."
+        )
+
+    total = len(team_recoveries)
+
+    zones = (
+        team_recoveries
+        .groupby("location_bucket", dropna=False)
+        .size()
+        .reset_index(name="recoveries")
+        .sort_values("recoveries", ascending=False)
+    )
+
+    zones["percentage"] = (
+        zones["recoveries"] / total * 100
+        if total > 0 else 0
+    )
+
+    return {
+        "summary": {
+            "total_recoveries": total,
+            "zones": zones.to_dict("records")
+        },
+        "events": team_recoveries.reset_index(drop=True),
+        "zones": zones.reset_index(drop=True)
+    }
+
+
+def calculate_ppda(events, team_id, halfway_line=60):
+    """
+    Calculate PPDA for a team, match by match.
+
+    PPDA = opponent passes / defensive actions.
+
+    Pressing area:
+    - Opponent passes in their own half.
+    - Defensive actions in the opponent half.
+
+    Defensive actions included:
+    - Tackles (Duel + type_name = Tackle)
+    - Interceptions
+    - Fouls committed
+
+    Pressures, blocks and ball recoveries are not included
+    in this PPDA definition.
+    """
+
+    required_columns = [
+        "type",
+        "type_name",
+        "team_id",
+        "match_id",
+        "location_x",
+        "attacking_direction"
+    ]
+
+    missing = [
+        col for col in required_columns
+        if col not in events.columns
+    ]
+
+    if missing:
+        raise ValueError(
+            f"Colonnes manquantes pour le PPDA : {missing}"
+        )
+
+    data = events.copy()
+
+    data["location_x"] = pd.to_numeric(
+        data["location_x"],
+        errors="coerce"
+    )
+
+    data = data.dropna(
+        subset=["location_x", "attacking_direction"]
+    )
+
+    data["type_lower"] = data["type"].str.lower()
+    data["direction_lower"] = (
+        data["attacking_direction"].str.lower()
+    )
+
+    # Opponent passes in their own half.
+    opponent_passes = data[
+        (data["team_id"] != team_id)
+        & (data["type_lower"] == "pass")
+    ].copy()
+
+    opponent_passes_in_zone = (
+        (
+            (opponent_passes["direction_lower"] == "left_to_right")
+            & (opponent_passes["location_x"] <= halfway_line)
+        )
+        |
+        (
+            (opponent_passes["direction_lower"] == "right_to_left")
+            & (opponent_passes["location_x"] >= halfway_line)
+        )
+    )
+
+    opponent_passes = opponent_passes[
+        opponent_passes_in_zone
+    ]
+
+    # Defensive actions by the selected team.
+    team_actions = data[
+        data["team_id"] == team_id
+    ].copy()
+
+    is_tackle = (
+        (team_actions["type_lower"] == "duel")
+        & (team_actions["type_name"].str.lower() == "tackle")
+    )
+
+    is_interception = (
+        team_actions["type_lower"] == "interception"
+    )
+
+    is_foul = (
+        team_actions["type_lower"] == "foul committed"
+    )
+
+    team_actions = team_actions[
+        is_tackle | is_interception | is_foul
+    ].copy()
+
+    # Defensive actions in the opponent half.
+    actions_in_zone = (
+        (
+            (team_actions["direction_lower"] == "left_to_right")
+            & (team_actions["location_x"] >= halfway_line)
+        )
+        |
+        (
+            (team_actions["direction_lower"] == "right_to_left")
+            & (team_actions["location_x"] <= halfway_line)
+        )
+    )
+
+    team_actions = team_actions[actions_in_zone]
+
+    # Calculate PPDA for each match.
+    match_ids = data["match_id"].dropna().unique()
+
+    results = []
+
+    for match_id in match_ids:
+
+        passes_count = len(
+            opponent_passes[
+                opponent_passes["match_id"] == match_id
+            ]
+        )
+
+        actions_count = len(
+            team_actions[
+                team_actions["match_id"] == match_id
+            ]
+        )
+
+        ppda = (
+            passes_count / actions_count
+            if actions_count > 0 else None
+        )
+
+        results.append({
+            "match_id": match_id,
+            "opponent_passes": passes_count,
+            "defensive_actions": actions_count,
+            "ppda": ppda
+        })
+
+    match_results = pd.DataFrame(
+        results,
+        columns=[
+            "match_id",
+            "opponent_passes",
+            "defensive_actions",
+            "ppda"
+        ]
+    )
+    
+    total_passes = match_results["opponent_passes"].sum()
+    total_actions = match_results["defensive_actions"].sum()
+
+    overall_ppda = (
+        total_passes / total_actions
+        if total_actions > 0 else None
+    )
+
+    return {
+        "summary": {
+            "total_opponent_passes": int(total_passes),
+            "total_defensive_actions": int(total_actions),
+            "ppda": overall_ppda
+        },
+        "matches": match_results
+    }
+
+
+
 def run_offensive_analysis(database_path, team_id=MONACO_TEAM_ID):
     """
     Run the complete offensive analysis.
@@ -1083,4 +1439,60 @@ def run_progression_analysis(
             "summary": between_lines_receptions["summary"],
             "events": between_lines_receptions["events"]
         }
+    }
+
+
+
+def run_defensive_analysis(
+    database_path,
+    team_id=MONACO_TEAM_ID
+):
+    """
+    Run the complete defensive analysis.
+    """
+
+    events = load_events(
+        database_path,
+        team_id
+    )
+
+    interceptions = get_interceptions(events)
+    tackles = get_tackles(events)
+    pressures = get_pressures(events)
+    recoveries = get_recoveries(events)
+    blocks = get_blocks(events)
+    fouls = get_fouls(events)
+
+    return {
+        "interceptions": analyze_defensive_events(
+            interceptions, team_id
+        ),
+
+        "tackles": analyze_defensive_events(
+            tackles, team_id
+        ),
+
+        "pressures": analyze_defensive_events(
+            pressures, team_id
+        ),
+
+        "recoveries": analyze_defensive_events(
+            recoveries, team_id
+        ),
+
+        "blocks": analyze_defensive_events(
+            blocks, team_id
+        ),
+
+        "fouls": analyze_defensive_events(
+            fouls, team_id
+        ),
+
+        "recovery_zones": analyze_recovery_zones(
+            recoveries, team_id
+        ),
+
+        "ppda": calculate_ppda(
+            events, team_id
+        )
     }

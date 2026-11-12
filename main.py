@@ -19,10 +19,12 @@ from src.database import (
 
 from src.global_analysis import (
     run_offensive_analysis,
-    run_progression_analysis
+    run_progression_analysis,
+    run_defensive_analysis
 )
 
 from dashboard.config import DB_PATH, TEAM_ID
+
 
 def main():
 
@@ -83,6 +85,7 @@ def main():
             connection,
             processed_directory
         )
+
         # 7. Contrôler les clés primaires
         check_primary_keys(connection)
 
@@ -93,21 +96,14 @@ def main():
         display_database_summary(connection)
 
         # 10. Construction des tables enrichies
-
         print("\n===== CONSTRUCTION EVENTS ENRICHED =====")
 
         enriched_tables = build_events_enriched(season_df)
 
-        connection = create_database(database_path)
-
-        try:
-            save_enriched_tables(
-                connection,
-                enriched_tables
-            )
-
-        finally:
-            connection.close()
+        save_enriched_tables(
+            connection,
+            enriched_tables
+        )
 
     finally:
         connection.close()
@@ -139,52 +135,101 @@ def main():
         results["assists"].to_string(index=False)
     )
 
-    
     # 12. Analyse de progression
     print("\n===== ANALYSE DE PROGRESSION AS MONACO =====")
-
-
 
     progression_results = run_progression_analysis(
         database_path=database_path,
         team_id=TEAM_ID
     )
 
-    # Progressive passes
     print("\n--- PROGRESSIVE PASSES ---")
-
     print(
         progression_results["progressive_passes"]["summary"]
     )
 
-    # Progressive carries
     print("\n--- PROGRESSIVE CARRIES ---")
-
     print(
         progression_results["progressive_carries"]["summary"]
     )
 
-    # Passes into final third
     print("\n--- PASSES INTO FINAL THIRD ---")
-
     print(
         progression_results["final_third_passes"]["summary"]
     )
 
-    # Potential line-breaking passes
     print("\n--- POTENTIAL LINE-BREAKING PASSES ---")
-
     print(
         progression_results["line_breaking_passes"]["summary"]
     )
 
-    # Between-the-lines receptions
     print("\n--- BETWEEN-THE-LINES RECEPTIONS ---")
-
     print(
         progression_results["between_lines_receptions"]["summary"]
     )
 
+    # 13. Analyse défensive
+    print("\n===== ANALYSE DÉFENSIVE AS MONACO =====")
+
+    defensive_results = run_defensive_analysis(
+        database_path=database_path,
+        team_id=TEAM_ID
+    )
+
+    # Interceptions
+    print("\n--- INTERCEPTIONS ---")
+    print(
+        defensive_results["interceptions"]["summary"]
+    )
+
+    # Tackles
+    print("\n--- TACKLES ---")
+    print(
+        defensive_results["tackles"]["summary"]
+    )
+
+    # Pressures
+    print("\n--- PRESSURES ---")
+    print(
+        defensive_results["pressures"]["summary"]
+    )
+
+    # Ball recoveries
+    print("\n--- BALL RECOVERIES ---")
+    print(
+        defensive_results["recoveries"]["summary"]
+    )
+
+    # Blocks
+    print("\n--- BLOCKS ---")
+    print(
+        defensive_results["blocks"]["summary"]
+    )
+
+    # Fouls
+    print("\n--- FOULS COMMITTED ---")
+    print(
+        defensive_results["fouls"]["summary"]
+    )
+
+    # Recovery zones
+    print("\n--- BALL RECOVERY ZONES ---")
+    print(
+        defensive_results["recovery_zones"]["zones"]
+        .to_string(index=False)
+    )
+
+    # PPDA
+    print("\n--- PPDA ---")
+    print(
+        defensive_results["ppda"]["summary"]
+    )
+
+    print("\n--- PPDA PAR MATCH ---")
+    print(
+        defensive_results["ppda"]["matches"]
+        .to_string(index=False)
+    )
 
     print("\n===== PIPELINE TERMINÉ =====")
 

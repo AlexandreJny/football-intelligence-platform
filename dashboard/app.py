@@ -30,7 +30,8 @@ from config import (
 
 from src.global_analysis import (
     run_offensive_analysis,
-    run_progression_analysis
+    run_progression_analysis,
+    run_defensive_analysis
 )
 
 # =========================================
@@ -701,6 +702,93 @@ def create_between_lines_pitch():
     return fig
 
 
+def create_defensive_pitch():
+
+    fig = go.Figure()
+
+    pitch_color = "#263746"
+
+    # Terrain
+    fig.add_shape(
+        type="rect",
+        x0=0, y0=0,
+        x1=120, y1=80,
+        fillcolor="#FFFFFF",
+        line=dict(color=pitch_color, width=2),
+        layer="below"
+    )
+
+    # Ligne médiane
+    fig.add_shape(
+        type="line",
+        x0=60, y0=0,
+        x1=60, y1=80,
+        line=dict(color=pitch_color, width=2),
+        layer="below"
+    )
+
+    # Cercle central
+    fig.add_shape(
+        type="circle",
+        x0=50, y0=30,
+        x1=70, y1=50,
+        line=dict(color=pitch_color, width=2),
+        fillcolor="rgba(0,0,0,0)",
+        layer="below"
+    )
+
+    # Surfaces
+    for x0, x1 in [(0, 18), (102, 120)]:
+        fig.add_shape(
+            type="rect",
+            x0=x0, y0=18,
+            x1=x1, y1=62,
+            line=dict(color=pitch_color, width=2),
+            fillcolor="rgba(0,0,0,0)"
+        )
+
+    # Surfaces de but
+    for x0, x1 in [(0, 6), (114, 120)]:
+        fig.add_shape(
+            type="rect",
+            x0=x0, y0=30,
+            x1=x1, y1=50,
+            line=dict(color=pitch_color, width=2),
+            fillcolor="rgba(0,0,0,0)",
+            layer="below"
+        )
+
+    fig.update_layout(
+        template="plotly_white",
+        paper_bgcolor=COLORS["card"],
+        plot_bgcolor="#FFFFFF",
+        height=600,
+        margin=dict(l=5, r=5, t=10, b=10),
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0
+        )
+    )
+
+    fig.update_xaxes(
+        range=[-2, 122],
+        visible=False,
+        fixedrange=True
+    )
+
+    fig.update_yaxes(
+        range=[-2, 82],
+        visible=False,
+        scaleanchor="x",
+        scaleratio=1,
+        fixedrange=True
+    )
+
+    return fig
 
 
 def add_progressive_passes_to_pitch(fig, passes):
@@ -1033,6 +1121,79 @@ def add_between_lines_heatmap(fig, receptions):
     return fig
 
 
+def add_defensive_actions_to_pitch(fig, events):
+
+    if events is None or events.empty:
+        return fig
+
+    required_columns = [
+        "location_x",
+        "location_y",
+        "defensive_action"
+    ]
+
+    missing = [
+        col for col in required_columns
+        if col not in events.columns
+    ]
+
+    if missing:
+        st.warning(f"Missing columns: {missing}")
+        return fig
+
+    valid = events.dropna(
+        subset=["location_x", "location_y"]
+    ).copy()
+
+    valid = valid[
+        valid["location_x"].between(0, 120)
+        & valid["location_y"].between(0, 80)
+    ]
+
+    action_colors = {
+        "Interceptions": "#3976B9",
+        "Tackles": "#159B72",
+        "Pressures": "#F0A43A",
+        "Recoveries": "#805AD5",
+        "Blocks": "#C0392B",
+        "Fouls": "#718096"
+    }
+
+    for action, group in valid.groupby("defensive_action"):
+
+        player_names = group.get(
+            "player_name",
+            pd.Series("Unknown", index=group.index)
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=group["location_x"],
+                y=group["location_y"],
+                mode="markers",
+                name=action,
+                marker=dict(
+                    size=9,
+                    color=action_colors.get(action, "#718096"),
+                    opacity=0.8,
+                    line=dict(
+                        color="#FFFFFF",
+                        width=1
+                    )
+                ),
+                text=player_names,
+                customdata=group["defensive_action"],
+                hovertemplate=(
+                    "<b>%{text}</b><br>"
+                    "Action: %{customdata}<br>"
+                    "Position: (%{x:.1f}, %{y:.1f})"
+                    "<extra></extra>"
+                )
+            )
+        )
+
+    return fig
+
 
 
 def display_progression_pitch(
@@ -1140,6 +1301,69 @@ def filter_progression_events(
     return filtered.reset_index(drop=True)
 
 
+
+def filter_defensive_events(
+    events,
+    player=None,
+    match_id=None
+):
+    if not isinstance(events, pd.DataFrame) or events.empty:
+        return pd.DataFrame()
+
+    filtered = events.copy()
+
+    if player is not None:
+        if "player_name" not in filtered.columns:
+            return pd.DataFrame()
+
+        filtered = filtered[
+            filtered["player_name"] == player
+        ]
+
+    if match_id is not None:
+        if "match_id" not in filtered.columns:
+            return pd.DataFrame()
+
+        filtered = filtered[
+            filtered["match_id"].astype(str) == str(match_id)
+        ]
+
+    return filtered.reset_index(drop=True)
+
+
+def get_defensive_events(results):
+    event_keys = [
+        "interceptions",
+        "tackles",
+        "pressures",
+        "recoveries",
+        "blocks",
+        "fouls"
+    ]
+
+    frames = []
+
+    for key in event_keys:
+        section = results.get(key, {})
+
+        if not isinstance(section, dict):
+            continue
+
+        events = section.get("events", pd.DataFrame())
+
+        if isinstance(events, pd.DataFrame) and not events.empty:
+            events = events.copy()
+            events["defensive_action"] = key.replace("_", " ").title()
+            frames.append(events)
+
+    if not frames:
+        return pd.DataFrame()
+
+    return pd.concat(frames, ignore_index=True)
+
+
+
+
 def display_progression_filters(results):
 
     passes = results.get(
@@ -1162,33 +1386,53 @@ def display_progression_filters(results):
     col1, col2 = st.columns(2)
 
     # Player filter
-    players = sorted(
-        combined["player_name"]
-        .dropna()
-        .unique()
-        .tolist()
+    players = (
+        sorted(
+            combined["player_name"]
+            .dropna()
+            .unique()
+            .tolist()
+        )
+        if "player_name" in combined.columns
+        else []
     )
 
     with col1:
 
         selected_player = st.selectbox(
             "Select player",
-            options=["All players"] + players
+            options=["All players"] + players,
+            index=0,
+            key="progression_player_filter"
         )
 
     # Match filter
-    matches = sorted(
-        combined["match_id"]
-        .dropna()
-        .unique()
-        .tolist()
+    matches = (
+        sorted(
+            combined["match_id"]
+            .dropna()
+            .unique()
+            .tolist(),
+            key=str,
+            reverse=True
+        )
+        if "match_id" in combined.columns
+        else []
     )
+
+    match_options = ["All matches"] + matches
 
     with col2:
 
         selected_match = st.selectbox(
             "Select match",
-            options=["All matches"] + matches
+            options=match_options,
+            index=1 if matches else 0,
+            format_func=lambda x: (
+                "All matches" if x == "All matches"
+                else f"Match {x}"
+            ),
+            key="progression_match_filter"
         )
 
     player = (
@@ -1204,7 +1448,6 @@ def display_progression_filters(results):
     )
 
     return player, match_id
-
 
 
 
@@ -1318,6 +1561,319 @@ def display_between_lines_analysis(
     )
 
 
+
+def display_defensive_filters(results):
+
+    combined = get_defensive_events(results)
+
+    if combined.empty:
+        st.warning("No defensive events available.")
+        return None, None
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        players = (
+            sorted(combined["player_name"].dropna().unique().tolist())
+            if "player_name" in combined.columns
+            else []
+        )
+
+        selected_player = st.selectbox(
+            "Select player",
+            options=["All players"] + players,
+            index=0,
+            key="defensive_player_filter"
+        )
+
+    with col2:
+
+        matches = (
+            sorted(
+                combined["match_id"].dropna().unique().tolist(),
+                key=str,
+                reverse=True
+            )
+            if "match_id" in combined.columns
+            else []
+        )
+
+        match_options = ["All matches"] + matches
+
+        selected_match = st.selectbox(
+            "Select match",
+            options=match_options,
+            index=1 if matches else 0,
+            key="defensive_match_filter"
+        )
+
+    player = (
+        None if selected_player == "All players"
+        else selected_player
+    )
+
+    match_id = (
+        None if selected_match == "All matches"
+        else selected_match
+    )
+
+    return player, match_id
+
+
+
+def display_defensive_kpis(results):
+
+    configurations = [
+        ("interceptions", "Interceptions"),
+        ("tackles", "Tackles"),
+        ("pressures", "Pressures"),
+        ("recoveries", "Recoveries"),
+        ("blocks", "Blocks"),
+        ("fouls", "Fouls")
+    ]
+
+    st.subheader("Defensive Performance Indicators")
+
+    columns = st.columns(3)
+
+    for index, (key, label) in enumerate(configurations):
+
+        section = results.get(key, {})
+        summary = section.get("summary", {}) if isinstance(section, dict) else {}
+
+        total = summary.get("total_events", 0)
+
+        with columns[index % 3]:
+
+            st.metric(
+                label=label,
+                value=f"{int(total):,}"
+            )
+
+
+
+def display_defensive_pitch(
+    results,
+    player=None,
+    match_id=None
+):
+
+    st.subheader("Defensive Actions Map")
+
+    st.caption(
+        "Localisation des interceptions, tacles, pressings, "
+        "récupérations, blocs et fautes."
+    )
+
+    events = get_defensive_events(results)
+
+    events = filter_defensive_events(
+        events,
+        player=player,
+        match_id=match_id
+    )
+
+    if events.empty:
+        st.info("No defensive actions available for these filters.")
+        return
+
+    fig = create_defensive_pitch()
+
+    fig = add_defensive_actions_to_pitch(
+        fig,
+        events
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        key="defensive_pitch_chart",
+        config={
+            "displayModeBar": False,
+            "responsive": True
+        }
+    )
+
+    st.caption(
+        f"Total defensive actions displayed: {len(events):,}"
+    )
+
+
+
+def display_recovery_zones(results):
+
+    st.subheader("Ball Recovery Zones")
+
+    st.caption(
+        "Répartition spatiale des récupérations de balle."
+    )
+
+    section = results.get("recovery_zones", {})
+
+    if not isinstance(section, dict):
+        st.info("Recovery zone data unavailable.")
+        return
+
+    zones = section.get("zones", pd.DataFrame())
+    summary = section.get("summary", {})
+
+    if not isinstance(zones, pd.DataFrame) or zones.empty:
+        st.info("No recovery zone data available.")
+        return
+
+    total = summary.get("total_recoveries", 0)
+
+    st.metric(
+        "Total recoveries",
+        f"{int(total):,}"
+    )
+
+    if {"location_bucket", "recoveries", "percentage"}.issubset(zones.columns):
+
+        fig = go.Figure()
+
+        fig.add_trace(
+            go.Bar(
+                x=zones["location_bucket"].astype(str),
+                y=zones["recoveries"],
+                text=[
+                    f"{value:.1f}%"
+                    for value in zones["percentage"]
+                ],
+                textposition="outside",
+                marker_color="#159B72",
+                hovertemplate=(
+                    "<b>%{x}</b><br>"
+                    "Recoveries: %{y}<br>"
+                    "%{text}"
+                    "<extra></extra>"
+                )
+            )
+        )
+
+        fig.update_layout(
+            template="plotly_white",
+            paper_bgcolor=COLORS["card"],
+            plot_bgcolor=COLORS["card"],
+            height=350,
+            margin=dict(l=10, r=10, t=30, b=10),
+            xaxis_title="Pitch zone",
+            yaxis_title="Recoveries",
+            showlegend=False
+        )
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            key="recovery_zones_chart"
+        )
+
+        st.dataframe(
+            zones,
+            use_container_width=True,
+            hide_index=True
+        )
+
+
+def display_ppda(results):
+
+    st.subheader("Pressing Intensity — PPDA")
+
+    st.caption(
+        "Passes adverses autorisées par action défensive de Monaco "
+        "dans la zone définie par ton modèle."
+    )
+
+    ppda_section = results.get("ppda", {})
+
+    if not isinstance(ppda_section, dict):
+        st.info("PPDA data unavailable.")
+        return
+
+    summary = ppda_section.get("summary", {})
+    matches = ppda_section.get("matches", pd.DataFrame())
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        value = summary.get("ppda")
+
+        st.metric(
+            "Overall PPDA",
+            f"{value:.2f}" if value is not None else "N/A"
+        )
+
+    with col2:
+        st.metric(
+            "Opponent Passes",
+            f"{summary.get('total_opponent_passes', 0):,}"
+        )
+
+    with col3:
+        st.metric(
+            "Defensive Actions",
+            f"{summary.get('total_defensive_actions', 0):,}"
+        )
+
+    if not isinstance(matches, pd.DataFrame) or matches.empty:
+        st.info("No match-level PPDA data available.")
+        return
+
+    st.markdown("#### PPDA by match")
+
+    if {"match_id", "ppda"}.issubset(matches.columns):
+
+        chart_data = matches.dropna(subset=["ppda"]).copy()
+
+        if not chart_data.empty:
+
+            chart_data["match_id"] = (
+                chart_data["match_id"].astype(str)
+            )
+
+            fig = go.Figure()
+
+            fig.add_trace(
+                go.Bar(
+                    x=chart_data["match_id"],
+                    y=chart_data["ppda"],
+                    marker_color="#3976B9",
+                    text=chart_data["ppda"].map(
+                        lambda value: f"{value:.2f}"
+                    ),
+                    textposition="outside",
+                    hovertemplate=(
+                        "Match: %{x}<br>"
+                        "PPDA: %{y:.2f}"
+                        "<extra></extra>"
+                    )
+                )
+            )
+
+            fig.update_layout(
+                template="plotly_white",
+                paper_bgcolor=COLORS["card"],
+                plot_bgcolor=COLORS["card"],
+                height=350,
+                margin=dict(l=10, r=10, t=30, b=10),
+                xaxis_title="Match",
+                yaxis_title="PPDA",
+                showlegend=False
+            )
+
+            st.plotly_chart(
+                fig,
+                use_container_width=True,
+                key="ppda_match_chart"
+            )
+
+    st.dataframe(
+        matches,
+        use_container_width=True,
+        hide_index=True
+    )
+
 # =========================================
 # DATA LOADING
 # =========================================
@@ -1351,6 +1907,109 @@ def load_progression_analysis():
     )
 
 
+@st.cache_data(ttl=300)
+def load_defensive_analysis():
+
+    if not DB_PATH.exists():
+        raise FileNotFoundError(
+            f"Base de données introuvable : {DB_PATH}"
+        )
+
+    return run_defensive_analysis(
+        database_path=DB_PATH,
+        team_id=TEAM_ID
+    )
+
+
+def display_defensive_analysis():
+
+    st.markdown(
+        '<div class="section-label">'
+        'DEFENSIVE ANALYSIS'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    st.title("Defensive Performance")
+
+    st.caption(
+        f"Defensive analysis | {TEAM_NAME}"
+    )
+
+    try:
+        with st.spinner("Calculating defensive analysis..."):
+            results = load_defensive_analysis()
+
+    except Exception as error:
+        st.error(
+            f"Unable to load defensive analysis: {error}"
+        )
+        return
+
+    # 01 — Defensive indicators
+    st.markdown(
+        '<div class="section-label">01 / Performance</div>',
+        unsafe_allow_html=True
+    )
+
+    display_defensive_kpis(results)
+
+    st.divider()
+
+    # 02 — Filters
+    st.markdown(
+        '<div class="section-label">02 / Filters</div>',
+        unsafe_allow_html=True
+    )
+
+    selected_player, selected_match = (
+        display_defensive_filters(results)
+    )
+
+    st.divider()
+
+    # 03 — Defensive actions map
+    st.markdown(
+        '<div class="section-label">03 / Defensive positioning</div>',
+        unsafe_allow_html=True
+    )
+
+    display_defensive_pitch(
+        results,
+        player=selected_player,
+        match_id=selected_match
+    )
+
+    st.divider()
+
+    # 04 — Recovery zones
+    st.markdown(
+        '<div class="section-label">04 / Ball recovery</div>',
+        unsafe_allow_html=True
+    )
+
+    display_recovery_zones(results)
+
+    st.divider()
+
+    # 05 — Pressing intensity
+    st.markdown(
+        '<div class="section-label">05 / Pressing intensity</div>',
+        unsafe_allow_html=True
+    )
+
+    display_ppda(results)
+
+    st.divider()
+
+    st.caption(
+        "FOOTBALL INTELLIGENCE PLATFORM | "
+        "DEFENSIVE ANALYSIS ENGINE"
+    )
+
+    st.caption(
+        f"Team ID: {TEAM_ID} | Database: {DB_PATH.name}"
+    )
 
 
 def display_progression_kpis(results):
@@ -1546,7 +2205,7 @@ st.markdown(
         <div class="dashboard-subtitle">
             FOOTBALL INTELLIGENCE PLATFORM
         </div>
-        <h1>Offensive Analysis</h1>
+        <h1>Global Analysis</h1>
         <div class="team-name">{TEAM_NAME}</div>
         <p class="dashboard-description">
             Analyse des performances offensives et des situations
@@ -1588,8 +2247,7 @@ def display_home():
         unsafe_allow_html=True
     )
 
-    col1, col2 = st.columns(2)
-
+    col1, col2, col3 = st.columns(3)
     with col1:
 
         st.subheader("⚽ Offensive Analysis")
@@ -1624,7 +2282,22 @@ def display_home():
             st.session_state.current_page = "progression"
             st.rerun()
 
+    with col3:
 
+        st.subheader("🛡️ Defensive Analysis")
+
+        st.caption(
+            "Interceptions, tackles, pressures, recoveries, "
+            "defensive positioning and pressing intensity."
+        )
+
+        if st.button(
+            "Open Defensive Analysis",
+            use_container_width=True
+        ):
+
+            st.session_state.current_page = "defensive"
+            st.rerun()
 
 
 # =========================================
@@ -1791,8 +2464,8 @@ elif st.session_state.current_page == "offensive":
 
 elif st.session_state.current_page == "progression":
 
-    # =========================================
-    # PROGRESSION ANALYSIS
-    # =========================================
-
     display_progression_analysis()
+
+elif st.session_state.current_page == "defensive":
+
+    display_defensive_analysis()

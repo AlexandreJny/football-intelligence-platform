@@ -22,6 +22,16 @@ from src.global_analysis import (
     analyze_between_lines_receptions,
     run_offensive_analysis,
     run_progression_analysis,
+    get_interceptions,
+    get_tackles,
+    get_pressures,
+    get_recoveries,
+    get_blocks,
+    get_fouls,
+    analyze_defensive_events,
+    analyze_recovery_zones,
+    calculate_ppda,
+    run_defensive_analysis,
 )
 
 
@@ -65,6 +75,82 @@ def pass_events(sample_events):
 @pytest.fixture
 def carry_events(sample_events):
     return get_carries(sample_events)
+
+@pytest.fixture
+def defensive_events():
+    """Dataset containing several defensive event types."""
+    return pd.DataFrame({
+        "event_id": [
+            "i1", "t1", "t2", "pr1",
+            "r1", "b1", "f1", "p1", "p2"
+        ],
+        "match_id": [1] * 9,
+        "type": [
+            "Interception",
+            "Duel",
+            "Duel",
+            "Pressure",
+            "Ball Recovery",
+            "Block",
+            "Foul Committed",
+            "Pass",
+            "Pass",
+        ],
+        "type_name": [
+            None,
+            "Tackle",
+            "Aerial",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ],
+        "team_id": [
+            129, 129, 129, 129, 129, 129, 129, 130, 130
+        ],
+        "player_id": [
+            10, 11, 12, 10, 11, 12, 10, 20, 20
+        ],
+        "player_name": [
+            "Player A", "Player B", "Player C",
+            "Player A", "Player B", "Player C",
+            "Player A", "Opponent", "Opponent"
+        ],
+        "location_x": [
+            75, 70, 65, 80, 50, 90, 65, 50, 80
+        ],
+        "location_y": [
+            40, 40, 30, 40, 35, 40, 45, 40, 40
+        ],
+        "outcome_name": [
+            "Won", "Won", "Lost", None,
+            "Success", None, None, None, None
+        ],
+        "location_bucket": [
+            "Attacking Third",
+            "Attacking Third",
+            "Middle Third",
+            "Attacking Third",
+            "Middle Third",
+            "Defensive Third",
+            "Middle Third",
+            "Middle Third",
+            "Attacking Third",
+        ],
+        "attacking_direction": [
+            "left_to_right",
+            "left_to_right",
+            "left_to_right",
+            "left_to_right",
+            "left_to_right",
+            "left_to_right",
+            "left_to_right",
+            "left_to_right",
+            "left_to_right",
+        ],
+    })
 
 
 def test_load_events_reads_only_matches_involving_team(tmp_path):
@@ -491,3 +577,247 @@ def test_run_progression_analysis_orchestrates_pipeline(monkeypatch, sample_even
     } == set(result)
     for section in result.values():
         assert set(section) == {"summary", "events"}
+
+def test_get_interceptions(defensive_events):
+    result = get_interceptions(defensive_events)
+
+    assert len(result) == 1
+    assert result.iloc[0]["event_id"] == "i1"
+
+
+def test_get_tackles_only_extracts_tackle_duels(defensive_events):
+    result = get_tackles(defensive_events)
+
+    assert len(result) == 1
+    assert result.iloc[0]["event_id"] == "t1"
+    assert result.iloc[0]["type_name"] == "Tackle"
+
+
+def test_get_tackles_raises_without_type_name(defensive_events):
+    events = defensive_events.drop(columns=["type_name"])
+
+    with pytest.raises(ValueError, match="type_name"):
+        get_tackles(events)
+
+
+@pytest.mark.parametrize(
+    "extractor,event_type,event_id",
+    [
+        (get_pressures, "Pressure", "pr1"),
+        (get_recoveries, "Ball Recovery", "r1"),
+        (get_blocks, "Block", "b1"),
+        (get_fouls, "Foul Committed", "f1"),
+    ],
+)
+def test_defensive_extractors(
+    defensive_events, extractor, event_type, event_id
+):
+    result = extractor(defensive_events)
+
+    assert len(result) == 1
+    assert result.iloc[0]["type"] == event_type
+    assert result.iloc[0]["event_id"] == event_id
+
+
+def test_defensive_extractor_drops_invalid_coordinates(defensive_events):
+    events = defensive_events.copy()
+
+    invalid = events.iloc[[0]].copy()
+    invalid["event_id"] = "invalid"
+    invalid["location_x"] = None
+
+    events = pd.concat([events, invalid], ignore_index=True)
+
+    result = get_interceptions(events)
+
+    assert "invalid" not in result["event_id"].tolist()
+
+def test_analyze_defensive_events_filters_selected_team(defensive_events):
+    interceptions = get_interceptions(defensive_events)
+
+    result = analyze_defensive_events(interceptions, 129)
+
+    assert result["summary"]["total_events"] == 1
+    assert result["summary"]["matches"] == 1
+    assert result["summary"]["players_involved"] == 1
+    assert result["events"]["team_id"].eq(129).all()
+
+
+def test_analyze_defensive_events_counts_outcomes(defensive_events):
+    tackles = get_tackles(defensive_events)
+
+    result = analyze_defensive_events(tackles, 129)
+
+    assert result["summary"]["outcomes"] == {"Won": 1}
+
+
+def test_analyze_defensive_events_empty_input(defensive_events):
+    empty = get_interceptions(defensive_events).iloc[0:0].copy()
+
+    result = analyze_defensive_events(empty, 129)
+
+    assert result["summary"]["total_events"] == 0
+    assert result["summary"]["matches"] == 0
+    assert result["summary"]["players_involved"] == 0
+    assert result["events"].empty
+
+
+def test_analyze_recovery_zones_only_counts_selected_team(defensive_events):
+    recoveries = get_recoveries(defensive_events)
+
+    result = analyze_recovery_zones(recoveries, 129)
+
+    assert result["summary"]["total_recoveries"] == 1
+    assert result["zones"]["recoveries"].sum() == 1
+    assert result["events"]["team_id"].eq(129).all()
+
+
+def test_analyze_recovery_zones_empty_input(defensive_events):
+    recoveries = get_recoveries(defensive_events).iloc[0:0].copy()
+
+    result = analyze_recovery_zones(recoveries, 129)
+
+    assert result["summary"]["total_recoveries"] == 0
+    assert result["zones"].empty
+    assert result["events"].empty
+
+
+def test_analyze_recovery_zones_calculates_percentages(defensive_events):
+    recoveries = get_recoveries(defensive_events)
+
+    extra = recoveries.copy()
+    extra["event_id"] = "r2"
+    extra["location_bucket"] = "Attacking Third"
+
+    recoveries = pd.concat([recoveries, extra], ignore_index=True)
+
+    result = analyze_recovery_zones(recoveries, 129)
+
+    assert result["summary"]["total_recoveries"] == 2
+    assert result["zones"]["recoveries"].sum() == 2
+    assert result["zones"]["percentage"].sum() == pytest.approx(100)
+
+
+def test_calculate_ppda_counts_passes_and_defensive_actions(defensive_events):
+    result = calculate_ppda(defensive_events, 129)
+
+    assert result["summary"]["total_opponent_passes"] == 1
+    assert result["summary"]["total_defensive_actions"] == 3
+    assert result["summary"]["ppda"] == pytest.approx(1 / 3)
+
+    assert len(result["matches"]) == 1
+    assert result["matches"].iloc[0]["match_id"] == 1
+
+
+def test_calculate_ppda_excludes_defensive_actions_outside_pressing_zone(
+    defensive_events
+):
+    events = defensive_events.copy()
+
+    # Move all Monaco defensive actions outside the pressing zone.
+    mask = (
+        (events["team_id"] == 129)
+        & (events["type"].isin([
+            "Duel", "Interception", "Foul Committed"
+        ]))
+    )
+
+    events.loc[mask, "location_x"] = 40
+
+    result = calculate_ppda(events, 129)
+
+    assert result["summary"]["total_defensive_actions"] == 0
+    assert result["summary"]["ppda"] is None
+
+
+def test_calculate_ppda_returns_empty_matches_with_empty_input():
+    events = pd.DataFrame(columns=[
+        "type",
+        "type_name",
+        "team_id",
+        "match_id",
+        "location_x",
+        "attacking_direction",
+    ])
+
+    result = calculate_ppda(events, 129)
+
+    assert result["summary"]["total_opponent_passes"] == 0
+    assert result["summary"]["total_defensive_actions"] == 0
+    assert result["summary"]["ppda"] is None
+    assert result["matches"].empty
+
+    assert list(result["matches"].columns) == [
+        "match_id",
+        "opponent_passes",
+        "defensive_actions",
+        "ppda",
+    ]
+
+
+def test_calculate_ppda_handles_matches_without_defensive_actions():
+    events = pd.DataFrame({
+        "type": ["Pass"],
+        "type_name": [None],
+        "team_id": [130],
+        "match_id": [1],
+        "location_x": [50],
+        "attacking_direction": ["left_to_right"],
+    })
+
+    result = calculate_ppda(events, 129)
+
+    assert result["summary"]["total_opponent_passes"] == 1
+    assert result["summary"]["total_defensive_actions"] == 0
+    assert result["summary"]["ppda"] is None
+    assert result["matches"].iloc[0]["ppda"] is None
+
+
+def test_calculate_ppda_raises_for_missing_columns():
+    events = pd.DataFrame({
+        "type": ["Pass"],
+        "team_id": [130],
+    })
+
+    with pytest.raises(ValueError, match="Colonnes manquantes"):
+        calculate_ppda(events, 129)
+
+
+def test_run_defensive_analysis_orchestrates_pipeline(
+    monkeypatch, defensive_events
+):
+    import src.global_analysis as analysis
+
+    monkeypatch.setattr(
+        analysis,
+        "load_events",
+        lambda path, team_id: defensive_events
+    )
+
+    result = run_defensive_analysis("unused.db", team_id=129)
+
+    assert {
+        "interceptions",
+        "tackles",
+        "pressures",
+        "recoveries",
+        "blocks",
+        "fouls",
+        "recovery_zones",
+        "ppda",
+    } == set(result)
+
+    for category in [
+        "interceptions",
+        "tackles",
+        "pressures",
+        "recoveries",
+        "blocks",
+        "fouls",
+    ]:
+        assert "summary" in result[category]
+        assert "events" in result[category]
+
+    assert "zones" in result["recovery_zones"]
+    assert "summary" in result["ppda"]
+    assert "matches" in result["ppda"]
