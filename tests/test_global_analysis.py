@@ -32,6 +32,12 @@ from src.global_analysis import (
     analyze_recovery_zones,
     calculate_ppda,
     run_defensive_analysis,
+    analyze_pass_network,
+    analyze_player_heatmaps,
+    analyze_space_occupation,
+    analyze_chance_creation,
+    analyze_attacking_patterns,
+    run_collective_analysis,
 )
 
 
@@ -151,6 +157,59 @@ def defensive_events():
             "left_to_right",
         ],
     })
+
+
+
+@pytest.fixture
+def collective_events():
+    """Dataset for collective analysis tests."""
+
+    return pd.DataFrame({
+        "event_id": [
+            "p1", "p2", "p3", "p4",
+            "c1", "c2",
+            "r1", "s1", "s2",
+        ],
+        "match_id": [1] * 9,
+        "period": [1] * 9,
+        "possession": [1, 1, 1, 2, 2, 2, 2, 2, 3],
+        "index": list(range(1, 10)),
+        "team_id": [129, 129, 129, 130, 129, 129, 129, 129, 129],
+        "player_id": [10, 11, 10, 20, 10, 11, 12, 12, 10],
+        "player_name": [
+            "Player A", "Player B", "Player A", "Opponent",
+            "Player A", "Player B", "Player C", "Player C", "Player A",
+        ],
+        "pass_recipient_name": [
+            "Player B", "Player A", None, "Opponent",
+            None, None, None, None, None,
+        ],
+        "type": [
+            "Pass", "Pass", "Pass", "Pass",
+            "Carries", "Carries", "Ball Receipt*",
+            "Shot", "Shot",
+        ],
+        "type_name": [None] * 9,
+        "location_x": [40, 70, 85, 50, 50, 80, 90, 110, 100],
+        "location_y": [40, 35, 40, 40, 40, 30, 40, 40, 25],
+        "end_location_x": [70, 85, 100, 75, 80, 105, None, None, None],
+        "end_location_y": [35, 40, 40, 40, 40, 30, None, None, None],
+        "pass_length": [30, 15, 15, 25, None, None, None, None, None],
+        "outcome_name": [
+            None, None, "Incomplete", None,
+            None, None, None, "Goal", "Saved",
+        ],
+        "assisted_shot_id": [
+            None, None, "s1", None,
+            None, None, None, None, None,
+        ],
+        "statsbomb_xg": [
+            None, None, None, None,
+            None, None, None, 0.4, 0.2,
+        ],
+        "key_pass_id": [None] * 9,
+    })
+
 
 
 def test_load_events_reads_only_matches_involving_team(tmp_path):
@@ -821,3 +880,284 @@ def test_run_defensive_analysis_orchestrates_pipeline(
     assert "zones" in result["recovery_zones"]
     assert "summary" in result["ppda"]
     assert "matches" in result["ppda"]
+
+
+# ============================================================
+# COLLECTIVE ANALYSIS - PASS NETWORK
+# ============================================================
+
+def test_analyze_pass_network_counts_successful_passes(collective_events):
+    passes = collective_events[
+        collective_events["type"] == "Pass"
+    ].copy()
+
+    result = analyze_pass_network(passes)
+
+    assert result["summary"]["successful_passes"] == 2
+    assert result["summary"]["links"] == 2
+    assert result["summary"]["players"] == 2
+
+    assert len(result["edges"]) == 2
+    assert set(result["edges"]["source"]) == {"Player A", "Player B"}
+
+
+def test_analyze_pass_network_calculates_player_positions(collective_events):
+    passes = collective_events[
+        collective_events["type"] == "Pass"
+    ].copy()
+
+    result = analyze_pass_network(passes)
+
+    nodes = result["nodes"].set_index("player")
+
+    assert "Player A" in nodes.index
+    assert "Player B" in nodes.index
+
+    assert nodes.loc["Player A", "passes"] == 1
+    assert nodes.loc["Player A", "receptions"] == 1
+
+
+def test_analyze_pass_network_excludes_incomplete_passes(collective_events):
+    passes = collective_events[
+        collective_events["type"] == "Pass"
+    ].copy()
+
+    result = analyze_pass_network(passes)
+
+    assert "p3" not in result["events"]["event_id"].tolist()
+
+
+def test_analyze_pass_network_empty_input():
+    result = analyze_pass_network(pd.DataFrame())
+
+    assert result["summary"]["successful_passes"] == 0
+    assert result["summary"]["links"] == 0
+    assert result["summary"]["players"] == 0
+
+    assert result["nodes"].empty
+    assert result["edges"].empty
+
+# ============================================================
+# COLLECTIVE ANALYSIS - PLAYER HEATMAPS
+# ============================================================
+
+def test_analyze_player_heatmaps_filters_activity_events(collective_events):
+    team_events = collective_events[
+        collective_events["team_id"] == 129
+    ]
+    result = analyze_player_heatmaps(team_events)
+
+    assert result["summary"]["players"] == 3
+    assert result["summary"]["events"] == 8
+
+    assert not result["zones"].empty
+
+    assert {
+        "player_name",
+        "x_bin",
+        "y_bin",
+        "events",
+        "percentage",
+    }.issubset(result["zones"].columns)
+
+
+def test_analyze_player_heatmaps_percentages_sum_to_100(collective_events):
+    result = analyze_player_heatmaps(collective_events)
+
+    percentages = (
+        result["zones"]
+        .groupby("player_name")["percentage"]
+        .sum()
+    )
+
+    for percentage in percentages:
+        assert percentage == pytest.approx(100)
+
+
+def test_analyze_player_heatmaps_empty_input():
+    result = analyze_player_heatmaps(pd.DataFrame())
+
+    assert result["summary"]["players"] == 0
+    assert result["summary"]["events"] == 0
+    assert result["zones"].empty
+
+
+# ============================================================
+# COLLECTIVE ANALYSIS - SPACE OCCUPATION
+# ============================================================
+
+def test_analyze_space_occupation_counts_events(collective_events):
+    team_events = collective_events[
+        collective_events["team_id"] == 129
+    ]
+    result = analyze_space_occupation(team_events)
+
+    assert result["summary"]["events"] == 6
+    assert result["summary"]["zones_used"] > 0
+
+    assert {
+        "longitudinal_zone",
+        "lateral_zone",
+        "events",
+        "percentage",
+    }.issubset(result["zones"].columns)
+
+
+def test_analyze_space_occupation_percentages_sum_to_100(collective_events):
+    result = analyze_space_occupation(collective_events)
+
+    assert result["zones"]["percentage"].sum() == pytest.approx(100)
+
+
+def test_analyze_space_occupation_empty_input():
+    result = analyze_space_occupation(pd.DataFrame())
+
+    assert result["summary"]["events"] == 0
+    assert result["summary"]["zones_used"] == 0
+    assert result["zones"].empty
+
+
+# ============================================================
+# COLLECTIVE ANALYSIS - CHANCE CREATION
+# ============================================================
+
+def test_analyze_chance_creation_links_passes_to_shots(collective_events):
+    result = analyze_chance_creation(
+        collective_events,
+        team_id=129,
+    )
+
+    assert result["summary"]["chance_creating_passes"] == 1
+    assert result["summary"]["linked_shots"] == 1
+    assert result["summary"]["xg_created"] == pytest.approx(0.4)
+
+    assert result["shots"]["shot_event_id"].tolist() == ["s1"]
+
+def test_analyze_chance_creation_excludes_opponent_events(collective_events):
+    result = analyze_chance_creation(
+        collective_events,
+        team_id=129,
+    )
+
+    assert result["passes"]["team_id"].eq(129).all()
+    assert result["shots"]["shot_event_id"].tolist() == ["s1"]
+
+def test_analyze_chance_creation_empty_input():
+    result = analyze_chance_creation(
+        pd.DataFrame(),
+        team_id=129,
+    )
+
+    assert result["summary"]["chance_creating_passes"] == 0
+    assert result["summary"]["linked_shots"] == 0
+    assert result["summary"]["xg_created"] == 0
+
+    assert result["passes"].empty
+    assert result["zones"].empty
+    assert result["shots"].empty
+
+
+# ============================================================
+# COLLECTIVE ANALYSIS - ATTACKING PATTERNS
+# ============================================================
+
+def test_analyze_attacking_patterns_builds_sequences(collective_events):
+    team_events = collective_events[
+        collective_events["team_id"] == 129
+    ].copy()
+
+    result = analyze_attacking_patterns(team_events)
+
+    assert result["summary"]["possessions"] > 0
+    assert not result["sequences"].empty
+
+    assert {
+        "match_id",
+        "period",
+        "possession",
+        "actions_count",
+        "sequence",
+    }.issubset(result["sequences"].columns)
+
+
+def test_analyze_attacking_patterns_counts_combinations(collective_events):
+    team_events = collective_events[
+        collective_events["team_id"] == 129
+    ].copy()
+
+    result = analyze_attacking_patterns(team_events)
+
+    combinations = result["combinations"]
+
+    assert not combinations.empty
+
+    assert {
+        "source",
+        "target",
+        "passes",
+    }.issubset(combinations.columns)
+
+    assert (
+        (combinations["source"] == "Player A")
+        & (combinations["target"] == "Player B")
+    ).any()
+
+
+def test_analyze_attacking_patterns_empty_input():
+    result = analyze_attacking_patterns(pd.DataFrame())
+
+    assert result["summary"]["possessions"] == 0
+    assert result["summary"]["combinations"] == 0
+
+    assert result["sequences"].empty
+    assert result["combinations"].empty
+
+
+# ============================================================
+# COLLECTIVE ANALYSIS - ORCHESTRATOR
+# ============================================================
+
+def test_run_collective_analysis_orchestrates_pipeline(
+    monkeypatch,
+    collective_events,
+):
+    import src.global_analysis as analysis
+
+    monkeypatch.setattr(
+        analysis,
+        "load_events",
+        lambda database_path, team_id: collective_events,
+    )
+
+    result = run_collective_analysis(
+        "unused.db",
+        team_id=129,
+    )
+
+    assert {
+        "pass_network",
+        "heatmaps",
+        "space_occupation",
+        "chance_creation",
+        "attacking_patterns",
+    } == set(result)
+
+    for section in result.values():
+        assert "summary" in section
+
+    assert result["pass_network"]["summary"]["successful_passes"] == 2
+    assert result["chance_creation"]["summary"]["linked_shots"] == 1
+    assert result["attacking_patterns"]["summary"]["possessions"] > 0
+
+
+def test_run_collective_analysis_raises_when_no_events(monkeypatch):
+    import src.global_analysis as analysis
+
+    monkeypatch.setattr(
+        analysis,
+        "load_events",
+        lambda database_path, team_id: pd.DataFrame(),
+    )
+
+    with pytest.raises(ValueError, match="Aucun événement"):
+        run_collective_analysis("unused.db", team_id=129)

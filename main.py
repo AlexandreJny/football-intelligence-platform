@@ -20,7 +20,8 @@ from src.database import (
 from src.global_analysis import (
     run_offensive_analysis,
     run_progression_analysis,
-    run_defensive_analysis
+    run_defensive_analysis,
+    run_collective_analysis
 )
 
 from dashboard.config import DB_PATH, TEAM_ID
@@ -228,6 +229,101 @@ def main():
     print("\n--- PPDA PAR MATCH ---")
     print(
         defensive_results["ppda"]["matches"]
+        .to_string(index=False)
+    )
+
+    # 14. Analyse collective
+    print("\n===== ANALYSE COLLECTIVE AS MONACO =====")
+
+    collective_results = run_collective_analysis(
+        database_path=database_path,
+        team_id=TEAM_ID
+    )
+
+    # Réseau de passes
+    print("\n--- PASS NETWORK ---")
+
+    print(
+        collective_results["pass_network"]["summary"]
+    )
+
+    print("\n--- TOP 15 PASS COMBINATIONS ---")
+
+    print(
+        collective_results["pass_network"]["edges"]
+        .head(15)
+        .to_string(index=False)
+    )
+
+    print("\n--- PLAYER POSITIONS ---")
+
+    print(
+        collective_results["pass_network"]["nodes"]
+        .to_string(index=False)
+    )
+
+    # Heatmaps
+    print("\n--- PLAYER HEATMAPS ---")
+
+    print(
+        collective_results["heatmaps"]["summary"]
+    )
+
+    print("\n--- TOP 20 HEATMAP ZONES ---")
+
+    print(
+        collective_results["heatmaps"]["zones"]
+        .sort_values("events", ascending=False)
+        .head(20)
+        .to_string(index=False)
+    )
+
+    # Occupation de l'espace
+    print("\n--- SPACE OCCUPATION ---")
+
+    print(
+        collective_results["space_occupation"]["summary"]
+    )
+
+    print(
+        collective_results["space_occupation"]["zones"]
+        .to_string(index=False)
+    )
+
+    # Création d'occasions
+    print("\n--- CHANCE CREATION ---")
+
+    print(
+        collective_results["chance_creation"]["summary"]
+    )
+
+    print("\n--- CHANCE CREATION ZONES ---")
+
+    print(
+        collective_results["chance_creation"]["zones"]
+        .to_string(index=False)
+    )
+
+    # Circuits offensifs
+    print("\n--- ATTACKING PATTERNS ---")
+
+    print(
+        collective_results["attacking_patterns"]["summary"]
+    )
+
+    print("\n--- TOP 15 PLAYER COMBINATIONS ---")
+
+    print(
+        collective_results["attacking_patterns"]["combinations"]
+        .head(15)
+        .to_string(index=False)
+    )
+
+    print("\n--- LAST 20 ATTACKING SEQUENCES ---")
+
+    print(
+        collective_results["attacking_patterns"]["sequences"]
+        .tail(20)
         .to_string(index=False)
     )
 

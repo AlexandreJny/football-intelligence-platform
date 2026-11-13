@@ -1,9 +1,9 @@
 from pathlib import Path
 import duckdb
 import pandas as pd
+import numpy as np
 
 MONACO_TEAM_ID = 129
-
 
 def load_events(database_path, team_id=MONACO_TEAM_ID):
     """
@@ -17,7 +17,7 @@ def load_events(database_path, team_id=MONACO_TEAM_ID):
 
     if not database_path.exists():
         raise FileNotFoundError(
-            f"Base de données introuvable : {database_path}"
+            f"Database not found: {database_path}"
         )
 
     connection = duckdb.connect(
@@ -47,118 +47,105 @@ def load_events(database_path, team_id=MONACO_TEAM_ID):
 
     return events
 
+def _valid_coordinates(df, x_col="location_x", y_col="location_y"):
+    """Keeps only events with valid coordinates."""
+    if df.empty or x_col not in df.columns or y_col not in df.columns:
+        return df.iloc[0:0].copy()
+
+    result = df.copy()
+    result[x_col] = pd.to_numeric(result[x_col], errors="coerce")
+    result[y_col] = pd.to_numeric(result[y_col], errors="coerce")
+
+    return result[
+        result[x_col].between(0, 120)
+        & result[y_col].between(0, 80)
+    ].copy()
+
+def _successful_passes(passes):
+    """
+    In StatsBomb, a null outcome_name generally indicates
+    a completed pass.
+    """
+    if passes.empty:
+        return passes.copy()
+
+    return passes[passes["outcome_name"].isna()].copy()
+
+def _get_coordinate_events(events, event_types, action_label):
+    """
+    Extract coordinate-based events with a common schema.
+
+    Coordinates are converted to numeric values and rows without
+    complete start/end coordinates are discarded.
+    """
+    required_columns = [
+        "type",
+        "event_id",
+        "match_id",
+        "team_id",
+        "player_id",
+        "player_name",
+        "location_x",
+        "location_y",
+        "end_location_x",
+        "end_location_y",
+    ]
+
+    missing = [
+        column for column in required_columns
+        if column not in events.columns
+    ]
+    if missing:
+        raise ValueError(
+            f"Missing columns for the {action_label} : {missing}"
+        )
+
+    normalized_types = {
+        str(event_type).strip().casefold()
+        for event_type in event_types
+    }
+    event_type_series = (
+        events["type"].astype("string").str.strip().str.casefold()
+    )
+    selected = events[event_type_series.isin(normalized_types)].copy()
+
+    coordinate_columns = [
+        "location_x",
+        "location_y",
+        "end_location_x",
+        "end_location_y",
+    ]
+    selected[coordinate_columns] = selected[coordinate_columns].apply(
+        pd.to_numeric,
+        errors="coerce",
+    )
+    selected = selected.dropna(subset=coordinate_columns)
+
+    return selected.reset_index(drop=True)
 
 def get_passes(events):
     """
     Extract all pass events from the dataset.
 
-    Includes passes from both the selected team
-    and its opponents.
+    Includes passes from both the selected team and its opponents.
     """
-
-    required_columns = [
-        "type",
-        "event_id",
-        "match_id",
-        "team_id",
-        "player_id",
-        "player_name",
-        "location_x",
-        "location_y",
-        "end_location_x",
-        "end_location_y"
-    ]
-
-    missing = [
-        col for col in required_columns
-        if col not in events.columns
-    ]
-
-    if missing:
-        raise ValueError(
-            f"Colonnes manquantes pour l'analyse des passes : {missing}"
-        )
-
-    passes = events[
-        events["type"].str.lower() == "pass"
-    ].copy()
-
-    coordinate_columns = [
-        "location_x",
-        "location_y",
-        "end_location_x",
-        "end_location_y"
-    ]
-
-    for col in coordinate_columns:
-        passes[col] = pd.to_numeric(
-            passes[col],
-            errors="coerce"
-        )
-
-    passes = passes.dropna(
-        subset=coordinate_columns
+    return _get_coordinate_events(
+        events,
+        event_types={"pass"},
+        action_label="passes",
     )
-
-    return passes.reset_index(drop=True)
-
-
 
 def get_carries(events):
     """
     Extract all carry events from the dataset.
 
-    Includes carries from both the selected team
-    and its opponents.
+    Accepts singular and plural labels used by event data sources.
     """
-
-    required_columns = [
-        "type",
-        "event_id",
-        "match_id",
-        "team_id",
-        "player_id",
-        "player_name",
-        "location_x",
-        "location_y",
-        "end_location_x",
-        "end_location_y"
-    ]
-
-    missing = [
-        col for col in required_columns
-        if col not in events.columns
-    ]
-
-    if missing:
-        raise ValueError(
-            f"Colonnes manquantes pour l'analyse des conduites : {missing}"
-        )
-
-    carries = events[
-        events["type"].str.lower() == "carries"
-    ].copy()
-
-    coordinate_columns = [
-        "location_x",
-        "location_y",
-        "end_location_x",
-        "end_location_y"
-    ]
-
-    for col in coordinate_columns:
-        carries[col] = pd.to_numeric(
-            carries[col],
-            errors="coerce"
-        )
-
-    carries = carries.dropna(
-        subset=coordinate_columns
+    return _get_coordinate_events(
+        events,
+        event_types={"carry", "carries"},
+        action_label="conduites",
     )
-
-    return carries.reset_index(drop=True)
-
-
 
 def get_shots(events):
     """
@@ -192,8 +179,6 @@ def get_shots(events):
     ].copy()
 
     return shots.reset_index(drop=True)
-
-
 
 def prepare_line_breaking_passes(passes, team_id):
     """
@@ -273,10 +258,6 @@ def prepare_line_breaking_passes(passes, team_id):
 
     return df.reset_index(drop=True)
 
-
-
-
-
 def _get_defensive_events(events, event_type, extra_filter=None):
     """
     Extract a defensive event type from the full event dataset.
@@ -299,7 +280,7 @@ def _get_defensive_events(events, event_type, extra_filter=None):
 
     if missing:
         raise ValueError(
-            f"Colonnes manquantes pour {event_type} : {missing}"
+            f"Missing columns for {event_type}: {missing}"
         )
 
     result = events[
@@ -321,14 +302,12 @@ def _get_defensive_events(events, event_type, extra_filter=None):
 
     return result.reset_index(drop=True)
 
-
 def get_interceptions(events):
     """Extract all interceptions."""
     return _get_defensive_events(
         events,
         "Interception"
     )
-
 
 def get_tackles(events):
     """
@@ -338,7 +317,7 @@ def get_tackles(events):
     """
     if "type_name" not in events.columns:
         raise ValueError(
-            "La colonne 'type_name' est nécessaire pour identifier les tacles."
+            "The 'type_name' column is required to identify tackles."
         )
 
     return _get_defensive_events(
@@ -348,14 +327,12 @@ def get_tackles(events):
             df["type_name"].str.lower() == "tackle"
     )
 
-
 def get_pressures(events):
     """Extract all pressure events."""
     return _get_defensive_events(
         events,
         "Pressure"
     )
-
 
 def get_recoveries(events):
     """Extract all ball recovery events."""
@@ -364,7 +341,6 @@ def get_recoveries(events):
         "Ball Recovery"
     )
 
-
 def get_blocks(events):
     """Extract all block events."""
     return _get_defensive_events(
@@ -372,15 +348,12 @@ def get_blocks(events):
         "Block"
     )
 
-
 def get_fouls(events):
     """Extract all committed fouls."""
     return _get_defensive_events(
         events,
         "Foul Committed"
     )
-
-
 
 def detect_line_breaking_passes(
     prepared_passes,
@@ -413,8 +386,6 @@ def detect_line_breaking_passes(
     ].copy()
 
     return line_breaking.reset_index(drop=True)
-
-
 
 def prepare_between_lines_receptions(events, team_id):
     """
@@ -473,8 +444,6 @@ def prepare_between_lines_receptions(events, team_id):
 
     return receptions.reset_index(drop=True)
 
-
-
 def detect_between_lines_receptions(
     prepared_receptions,
     final_third_start=80,
@@ -503,8 +472,6 @@ def detect_between_lines_receptions(
     ].copy()
 
     return between_lines.reset_index(drop=True)
-
-
 
 def calculate_shot_metrics(shots):
     """
@@ -551,8 +518,6 @@ def calculate_shot_metrics(shots):
         "conversion_rate": conversion_rate,
         "goals_minus_xg": goals - total_xg
     }
-
-
 
 def analyze_shot_zones(shots):
 
@@ -641,7 +606,6 @@ def analyze_shot_zones(shots):
 
     return summary
 
-
 def analyze_shot_assists(events, shots):
     """
     Link passes to shots using assisted_shot_id.
@@ -708,7 +672,6 @@ def analyze_shot_assists(events, shots):
     ]
 
     return linked
-
 
 def analyze_progressive_passes(passes, team_id=MONACO_TEAM_ID):
     """
@@ -800,8 +763,6 @@ def analyze_progressive_passes(passes, team_id=MONACO_TEAM_ID):
         "events": progressive_passes
     }
 
-
-
 def analyze_progressive_carries(carries, team_id=MONACO_TEAM_ID):
     """
     Identify progressive carries for a specific team.
@@ -892,8 +853,6 @@ def analyze_progressive_carries(carries, team_id=MONACO_TEAM_ID):
         "events": progressive_carries
     }
 
-
-
 def analyze_final_third_passes(passes, team_id=MONACO_TEAM_ID):
     """
     Identify passes entering the opponent's final third.
@@ -961,8 +920,6 @@ def analyze_final_third_passes(passes, team_id=MONACO_TEAM_ID):
         "events": final_third_passes
     }
 
-
-
 def analyze_line_breaking_passes(passes, team_id):
     """
     Analyze potential line-breaking passes.
@@ -1026,8 +983,6 @@ def analyze_line_breaking_passes(passes, team_id):
         "events": line_breaking
     }
 
-
-
 def analyze_between_lines_receptions(events, team_id):
     """
     Analyze receptions in central areas of the final third.
@@ -1079,7 +1034,6 @@ def analyze_between_lines_receptions(events, team_id):
         "events": between_lines
     }
 
-
 def analyze_defensive_events(defensive_events, team_id):
     """
     Calculate basic defensive statistics for one team.
@@ -1116,7 +1070,6 @@ def analyze_defensive_events(defensive_events, team_id):
         "events": team_events.reset_index(drop=True)
     }
 
-
 def analyze_recovery_zones(recoveries, team_id):
     """
     Analyze ball recoveries by pre-existing location bucket.
@@ -1128,7 +1081,7 @@ def analyze_recovery_zones(recoveries, team_id):
 
     if "location_bucket" not in team_recoveries.columns:
         raise ValueError(
-            "La colonne 'location_bucket' est nécessaire."
+            "The 'location_bucket' column is required."
         )
 
     total = len(team_recoveries)
@@ -1154,7 +1107,6 @@ def analyze_recovery_zones(recoveries, team_id):
         "events": team_recoveries.reset_index(drop=True),
         "zones": zones.reset_index(drop=True)
     }
-
 
 def calculate_ppda(events, team_id, halfway_line=60):
     """
@@ -1191,7 +1143,7 @@ def calculate_ppda(events, team_id, halfway_line=60):
 
     if missing:
         raise ValueError(
-            f"Colonnes manquantes pour le PPDA : {missing}"
+            f"Missing columns for PPDA: {missing}"
         )
 
     data = events.copy()
@@ -1309,7 +1261,7 @@ def calculate_ppda(events, team_id, halfway_line=60):
             "ppda"
         ]
     )
-    
+
     total_passes = match_results["opponent_passes"].sum()
     total_actions = match_results["defensive_actions"].sum()
 
@@ -1327,7 +1279,660 @@ def calculate_ppda(events, team_id, halfway_line=60):
         "matches": match_results
     }
 
+def analyze_pass_network(passes):
+    """
+    Builds the passing network match by match.
 
+    Retourne :
+    - summary: overall statistics
+    - nodes: average player positions per match
+    - edges: passer/recipient relationships per match
+    - events: completed passes used
+    """
+
+    required = [
+        "match_id",
+        "event_id",
+        "player_name",
+        "pass_recipient_name",
+        "location_x",
+        "location_y",
+        "end_location_x",
+        "end_location_y",
+        "pass_length",
+    ]
+
+    if passes.empty or not all(
+        col in passes.columns for col in required
+    ):
+        return {
+            "summary": {
+                "successful_passes": 0,
+                "links": 0,
+                "players": 0,
+            },
+            "nodes": pd.DataFrame(),
+            "edges": pd.DataFrame(),
+            "events": pd.DataFrame(),
+        }
+
+    # 1. Successful passes
+    successful = _successful_passes(passes)
+
+    successful = successful.dropna(
+        subset=[
+            "match_id",
+            "player_name",
+            "pass_recipient_name",
+        ]
+    ).copy()
+
+    successful = successful[
+        successful["player_name"]
+        != successful["pass_recipient_name"]
+    ]
+
+    successful = _valid_coordinates(successful)
+
+    successful = _valid_coordinates(
+        successful,
+        "end_location_x",
+        "end_location_y",
+    )
+
+    if successful.empty:
+        return {
+            "summary": {
+                "successful_passes": 0,
+                "links": 0,
+                "players": 0,
+            },
+            "nodes": pd.DataFrame(),
+            "edges": pd.DataFrame(),
+            "events": successful,
+        }
+
+    # 2. Edges: one relationship per match
+    edges = (
+        successful.groupby(
+            [
+                "match_id",
+                "player_name",
+                "pass_recipient_name",
+            ],
+            as_index=False,
+        )
+        .agg(
+            passes=("event_id", "count"),
+            avg_pass_length=("pass_length", "mean"),
+        )
+        .rename(
+            columns={
+                "player_name": "source",
+                "pass_recipient_name": "target",
+            }
+        )
+        .sort_values("passes", ascending=False)
+        .reset_index(drop=True)
+    )
+
+    # 3. Passer positions
+    passer_positions = successful[
+        [
+            "match_id",
+            "player_name",
+            "location_x",
+            "location_y",
+        ]
+    ].rename(
+        columns={
+            "player_name": "player",
+            "location_x": "x",
+            "location_y": "y",
+        }
+    )
+
+    # 4. Receiver positions
+    receiver_positions = successful[
+        [
+            "match_id",
+            "pass_recipient_name",
+            "end_location_x",
+            "end_location_y",
+        ]
+    ].rename(
+        columns={
+            "pass_recipient_name": "player",
+            "end_location_x": "x",
+            "end_location_y": "y",
+        }
+    )
+
+    positions = pd.concat(
+        [
+            passer_positions,
+            receiver_positions,
+        ],
+        ignore_index=True,
+    )
+
+    # 5. Nodes: one player per match
+    nodes = (
+        positions.groupby(
+            ["match_id", "player"],
+            as_index=False,
+        )
+        .agg(
+            x=("x", "mean"),
+            y=("y", "mean"),
+        )
+    )
+
+    # 6. Pass counts per player and match
+    pass_counts = (
+        successful.groupby(
+            ["match_id", "player_name"]
+        )
+        .size()
+        .rename("passes")
+        .reset_index()
+        .rename(columns={"player_name": "player"})
+    )
+
+    # 7. Reception counts per player and match
+    reception_counts = (
+        successful.groupby(
+            ["match_id", "pass_recipient_name"]
+        )
+        .size()
+        .rename("receptions")
+        .reset_index()
+        .rename(
+            columns={"pass_recipient_name": "player"}
+        )
+    )
+
+    nodes = nodes.merge(
+        pass_counts,
+        on=["match_id", "player"],
+        how="left",
+    )
+
+    nodes = nodes.merge(
+        reception_counts,
+        on=["match_id", "player"],
+        how="left",
+    )
+
+    nodes[["passes", "receptions"]] = (
+        nodes[["passes", "receptions"]]
+        .fillna(0)
+        .astype(int)
+    )
+
+    # 8. General summary
+    summary = {
+        "successful_passes": len(successful),
+        "links": len(edges),
+        "players": nodes["player"].nunique(),
+        "matches": successful["match_id"].nunique(),
+    }
+
+    return {
+        "summary": summary,
+        "nodes": nodes,
+        "edges": edges,
+        "events": successful.reset_index(drop=True),
+    }
+
+def analyze_player_heatmaps(team_events, bins_x=12, bins_y=8):
+    """
+    Calculates each player's activity zones.
+
+    Heatmaps use the starting coordinates of events.
+    Included events are passes, carries, receptions, dribbles, and shots.
+    """
+
+    if team_events.empty:
+        return {
+            "summary": {"players": 0, "events": 0},
+            "zones": pd.DataFrame(),
+            "events": pd.DataFrame(),
+        }
+
+    activity_types = [
+        "pass",
+        "carry",
+        "carries",
+        "ball receipt*",
+        "dribble",
+        "shot",
+    ]
+
+    events = team_events[
+        team_events["type"].astype(str).str.lower().isin(activity_types)
+    ].copy()
+
+    events = _valid_coordinates(events)
+
+    if events.empty or "player_name" not in events.columns:
+        return {
+            "summary": {"players": 0, "events": 0},
+            "zones": pd.DataFrame(),
+            "events": events,
+        }
+
+    events = events.dropna(subset=["player_name"])
+
+    events["x_bin"] = pd.cut(
+        events["location_x"],
+        bins=np.linspace(0, 120, bins_x + 1),
+        include_lowest=True,
+        labels=False,
+    )
+
+    events["y_bin"] = pd.cut(
+        events["location_y"],
+        bins=np.linspace(0, 80, bins_y + 1),
+        include_lowest=True,
+        labels=False,
+    )
+
+    zones = (
+        events.groupby(
+            ["player_name", "x_bin", "y_bin"],
+            observed=True,
+            as_index=False,
+        )
+        .size()
+        .rename(columns={"size": "events"})
+    )
+
+    zones["percentage"] = (
+        zones["events"]
+        / zones.groupby("player_name")["events"].transform("sum")
+        * 100
+    )
+
+    summary = {
+        "players": events["player_name"].nunique(),
+        "events": len(events),
+    }
+
+    return {
+        "summary": summary,
+        "zones": zones,
+        "events": events,
+    }
+
+def analyze_space_occupation(team_events):
+    """
+    Distributes attacking actions across a grid of 3 longitudinal zones
+    and 5 pitch lanes.
+    """
+
+    if team_events.empty:
+        return {
+            "summary": {"events": 0, "zones_used": 0},
+            "zones": pd.DataFrame(),
+            "events": pd.DataFrame(),
+        }
+
+    activity_types = [
+        "pass",
+        "carry",
+        "carries",
+        "ball receipt*",
+        "dribble",
+    ]
+
+    events = team_events[
+        team_events["type"].astype(str).str.lower().isin(activity_types)
+    ].copy()
+
+    events = _valid_coordinates(events)
+
+    if events.empty:
+        return {
+            "summary": {"events": 0, "zones_used": 0},
+            "zones": pd.DataFrame(),
+            "events": events,
+        }
+
+    events["longitudinal_zone"] = pd.cut(
+        events["location_x"],
+        bins=[0, 40, 80, 120],
+        labels=["Defensive", "Middle", "Attacking"],
+        include_lowest=True,
+    )
+
+    events["lateral_zone"] = pd.cut(
+        events["location_y"],
+        bins=[0, 16, 32, 48, 64, 80],
+        labels=[
+            "Couloir haut",
+            "Demi-espace haut",
+            "Axe",
+            "Demi-espace bas",
+            "Couloir bas",
+        ],
+        include_lowest=True,
+    )
+
+    zones = (
+        events.groupby(
+            ["longitudinal_zone", "lateral_zone"],
+            observed=True,
+            as_index=False,
+        )
+        .size()
+        .rename(columns={"size": "events"})
+    )
+
+    total = zones["events"].sum()
+
+    zones["percentage"] = (
+        zones["events"] / total * 100
+        if total > 0
+        else 0
+    )
+
+    zones = zones.sort_values("events", ascending=False)
+
+    summary = {
+        "events": len(events),
+        "zones_used": len(zones),
+    }
+
+    return {
+        "summary": summary,
+        "zones": zones,
+        "events": events,
+    }
+
+def analyze_chance_creation(team_events, team_id):
+    """
+    Identifies shot-assisted passes using assisted_shot_id.
+    Calculates the xG of the associated shots and distributes
+    chance-creating passes across pitch zones.
+    """
+
+    empty_result = {
+        "summary": {
+            "chance_creating_passes": 0,
+            "linked_shots": 0,
+            "xg_created": 0.0,
+        },
+        "passes": pd.DataFrame(),
+        "zones": pd.DataFrame(),
+        "shots": pd.DataFrame(),
+    }
+
+    if team_events.empty:
+        return empty_result
+
+    # --------------------------------------------------------
+    # 1. Extract AS Monaco events
+    # --------------------------------------------------------
+
+    team_events = team_events[
+        team_events["team_id"] == team_id
+    ].copy()
+
+    if team_events.empty:
+        return empty_result
+
+    # --------------------------------------------------------
+    # 2. Extract AS Monaco passes
+    # --------------------------------------------------------
+
+    passes = team_events[
+        team_events["type"].astype(str).str.lower().eq("pass")
+    ].copy()
+
+    if passes.empty or "assisted_shot_id" not in passes.columns:
+        return empty_result
+
+    # Do NOT filter on outcome_name:
+    # a shot-assisted pass may be incomplete.
+
+    passes["assisted_shot_id"] = (
+        passes["assisted_shot_id"].astype("string")
+    )
+
+    chance_passes = passes[
+        passes["assisted_shot_id"].notna()
+    ].copy()
+
+    chance_passes = _valid_coordinates(chance_passes)
+
+    if chance_passes.empty:
+        return empty_result
+
+    # --------------------------------------------------------
+    # 3. Extract AS Monaco shots
+    # --------------------------------------------------------
+
+    shots = team_events[
+        team_events["type"].astype(str).str.lower().eq("shot")
+    ].copy()
+
+    required_shot_columns = {
+        "event_id",
+        "match_id",
+        "statsbomb_xg",
+    }
+
+    if not required_shot_columns.issubset(shots.columns):
+        return empty_result
+
+    shots = shots[
+        ["event_id", "match_id", "statsbomb_xg"]
+    ].rename(
+        columns={
+            "event_id": "shot_event_id",
+            "statsbomb_xg": "shot_xg",
+        }
+    )
+
+    # --------------------------------------------------------
+    # 4. Link passes to shots
+    # --------------------------------------------------------
+
+    linked_shots = chance_passes.merge(
+        shots,
+        left_on=["assisted_shot_id", "match_id"],
+        right_on=["shot_event_id", "match_id"],
+        how="inner",
+    )
+
+    # --------------------------------------------------------
+    # 5. Distribution of chance-creating passes by zone
+    # --------------------------------------------------------
+
+    zones_data = chance_passes.copy()
+
+    zones_data["x_zone"] = pd.cut(
+        zones_data["location_x"],
+        bins=[0, 40, 80, 120],
+        labels=["Defensive", "Middle", "Attacking"],
+        include_lowest=True,
+    )
+
+    zones_data["y_zone"] = pd.cut(
+        zones_data["location_y"],
+        bins=[0, 16, 32, 48, 64, 80],
+        labels=[
+            "Couloir haut",
+            "Demi-espace haut",
+            "Axe",
+            "Demi-espace bas",
+            "Couloir bas",
+        ],
+        include_lowest=True,
+    )
+
+    zones = (
+        zones_data.groupby(
+            ["x_zone", "y_zone"],
+            observed=True,
+            as_index=False,
+        )
+        .size()
+        .rename(columns={"size": "chance_passes"})
+        .sort_values(
+            "chance_passes",
+            ascending=False,
+        )
+    )
+
+    # --------------------------------------------------------
+    # 6. Calculate created xG
+    # --------------------------------------------------------
+
+    xg_created = pd.to_numeric(
+        linked_shots["shot_xg"],
+        errors="coerce",
+    ).sum()
+
+    # --------------------------------------------------------
+    # 7. Summary
+    # --------------------------------------------------------
+
+    summary = {
+        "chance_creating_passes": len(chance_passes),
+        "linked_shots": len(linked_shots),
+        "xg_created": float(xg_created),
+    }
+
+    return {
+        "summary": summary,
+        "passes": chance_passes,
+        "zones": zones,
+        "shots": linked_shots,
+    }
+
+def analyze_attacking_patterns(team_events):
+    """
+    Analyzes attacking patterns based on possessions.
+
+    Produit :
+    - passing and carrying sequences per possession;
+    - the most frequent passer-recipient combinations.
+
+    This analysis describes on-ball sequences,
+    not off-ball movements.
+    """
+
+    empty_result = {
+        "summary": {
+            "possessions": 0,
+            "combinations": 0,
+        },
+        "sequences": pd.DataFrame(),
+        "combinations": pd.DataFrame(),
+    }
+
+    if team_events.empty:
+        return empty_result
+
+    required = ["match_id", "period", "possession", "index", "type"]
+
+    missing = [
+        col for col in required
+        if col not in team_events.columns
+    ]
+
+    if missing:
+        raise ValueError(
+            f"Attacking patterns: missing columns: {missing}"
+        )
+
+    events = team_events[
+        team_events["type"].astype(str).str.lower().isin(
+            ["pass", "carry", "carries"]
+        )
+    ].copy()
+
+    events = events.sort_values(
+        ["match_id", "period", "possession", "index"]
+    )
+
+    if events.empty:
+        return empty_result
+
+    sequences = []
+
+    for (match_id, period, possession), group in events.groupby(
+        ["match_id", "period", "possession"],
+        dropna=False,
+        sort=False,
+    ):
+        actions = []
+
+        for _, event in group.iterrows():
+            player = event.get("player_name")
+            event_type = str(event.get("type", "")).lower()
+
+            if pd.isna(player):
+                continue
+
+            if event_type == "pass":
+                recipient = event.get("pass_recipient_name")
+
+                if pd.notna(recipient):
+                    actions.append(f"{player} → {recipient}")
+                else:
+                    actions.append(f"{player} (passe)")
+
+            else:
+                actions.append(f"{player} (conduite)")
+
+        if actions:
+            sequences.append({
+                "match_id": match_id,
+                "period": period,
+                "possession": possession,
+                "actions_count": len(actions),
+                "sequence": " | ".join(actions),
+            })
+
+    sequences_df = pd.DataFrame(sequences)
+
+    passes = events[
+        events["type"].astype(str).str.lower() == "pass"
+    ].copy()
+
+    passes = passes.dropna(
+        subset=["player_name", "pass_recipient_name"]
+    )
+
+    combinations = (
+        passes.groupby(
+            ["player_name", "pass_recipient_name"],
+            as_index=False,
+        )
+        .size()
+        .rename(
+            columns={
+                "player_name": "source",
+                "pass_recipient_name": "target",
+                "size": "passes",
+            }
+        )
+        .sort_values("passes", ascending=False)
+    )
+
+    summary = {
+        "possessions": len(sequences_df),
+        "combinations": len(combinations),
+    }
+
+    return {
+        "summary": summary,
+        "sequences": sequences_df,
+        "combinations": combinations,
+    }
 
 def run_offensive_analysis(database_path, team_id=MONACO_TEAM_ID):
     """
@@ -1360,8 +1965,6 @@ def run_offensive_analysis(database_path, team_id=MONACO_TEAM_ID):
         "zones": zones,
         "assists": assists
     }
-
-
 
 def run_progression_analysis(
     database_path,
@@ -1441,8 +2044,6 @@ def run_progression_analysis(
         }
     }
 
-
-
 def run_defensive_analysis(
     database_path,
     team_id=MONACO_TEAM_ID
@@ -1495,4 +2096,54 @@ def run_defensive_analysis(
         "ppda": calculate_ppda(
             events, team_id
         )
+    }
+
+def run_collective_analysis(database_path, team_id=MONACO_TEAM_ID):
+    """
+    Runs AS Monaco's five collective analyses.
+
+    load_events loads the matches AS Monaco participated in.
+    AS Monaco events are then filtered for collective analyses
+    to avoid mixing them with opposition actions.
+    """
+
+    events = load_events(
+        database_path=database_path,
+        team_id=team_id,
+    )
+
+    if events.empty:
+        raise ValueError(
+            f"No events found for team {team_id}."
+        )
+
+    team_events = events[
+        events["team_id"] == team_id
+    ].copy()
+
+    passes = get_passes(events)
+
+    team_passes = passes[
+        passes["team_id"] == team_id
+    ].copy()
+
+    return {
+        "pass_network": analyze_pass_network(team_passes),
+
+        "heatmaps": analyze_player_heatmaps(
+            team_events
+        ),
+
+        "space_occupation": analyze_space_occupation(
+            team_events
+        ),
+
+        "chance_creation": analyze_chance_creation(
+            events,
+            team_id,
+        ),
+
+        "attacking_patterns": analyze_attacking_patterns(
+            team_events
+        ),
     }

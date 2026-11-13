@@ -1,11 +1,6 @@
 import sys
 from pathlib import Path
 
-import streamlit as st
-import pandas as pd
-import plotly.graph_objects as go
-from numbers import Real
-
 # =========================================
 # PROJECT PATH
 # =========================================
@@ -15,23 +10,27 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-
-# =========================================
-# IMPORTS
-# =========================================
+import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
+from numbers import Real
 
 from config import (
     DB_PATH,
     APP_TITLE,
     COLORS,
     TEAM_ID,
-    TEAM_NAME
+    TEAM_NAME,
+    CACHE_TTL_SECONDS,
+    PITCH_LENGTH,
+    PITCH_WIDTH
 )
 
 from src.global_analysis import (
     run_offensive_analysis,
     run_progression_analysis,
-    run_defensive_analysis
+    run_defensive_analysis,
+    run_collective_analysis,
 )
 
 # =========================================
@@ -44,7 +43,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed"
 )
-
 
 # =========================================
 # CUSTOM CSS
@@ -93,6 +91,12 @@ st.markdown(
         font-weight: 700;
     }}
 
+    .dashboard-description {{
+        color: {COLORS["muted"]};
+        font-size: 14px;
+        margin-bottom: 0;
+    }}
+
     [data-testid="stMetric"] {{
         background-color: {COLORS["card"]};
         border: 1px solid {COLORS["border"]};
@@ -134,7 +138,6 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-
 # =========================================
 # SHOT ZONE LEGEND
 # =========================================
@@ -148,19 +151,19 @@ def display_shot_zone_legend(zones_df):
     zone_styles = {
         "outside penalty area": {
             "color": "#F0A43A",
-            "description": "Zone extérieure à la surface de réparation."
+            "description": "Area outside the penalty box."
         },
         "central outside area": {
             "color": "#F5CB78",
-            "description": "Couloir central devant la surface."
+            "description": "Central channel in front of the penalty box."
         },
         "penalty area": {
             "color": "#3976B9",
-            "description": "Ensemble de la surface de réparation."
+            "description": "Entire penalty area."
         },
         "central penalty area": {
             "color": "#159B72",
-            "description": "Zone centrale à l'intérieur de la surface."
+            "description": "Central area inside the penalty box."
         }
     }
 
@@ -182,7 +185,7 @@ def display_shot_zone_legend(zones_df):
             zone_key,
             {
                 "color": "#718096",
-                "description": "Zone de tir."
+                "description": "Shot area."
             }
         )
 
@@ -210,16 +213,149 @@ def display_shot_zone_legend(zones_df):
                 f"Average xG: {average_xg:.3f}"
             )
 
-
 # =========================================
 # FOOTBALL PITCH
 # =========================================
 
+# =========================================
+# SHARED FOOTBALL PITCH
+# =========================================
+
+def add_football_pitch(
+    fig,
+    *,
+    pitch_color="#B8C2CC",
+    line_width=1.5,
+    height=600,
+    x_range=(-2, PITCH_LENGTH + 2),
+    y_range=(-2, PITCH_WIDTH + 2),
+    invert_y=False,
+    background_color="#FFFFFF",
+    paper_color=None,
+    show_legend=False,
+):
+    """
+    Adds a standard football pitch to an existing Plotly figure.
+
+    Coordinates used: 120 x 80.
+    Call this on the figure BEFORE or AFTER adding data traces:
+    - the pitch background is placed beneath the traces;
+    - the pitch markings are placed above the traces to remain visible
+      on heatmaps.
+
+    `invert_y=True` preserves the orientation of heatmaps
+    whose vertical axis runs from 80 down to 0.
+    """
+    if fig is None:
+        fig = go.Figure()
+
+    transparent = "rgba(0,0,0,0)"
+
+    # White background and outer boundary
+    fig.add_shape(
+        type="rect",
+        x0=0, y0=0, x1=PITCH_LENGTH, y1=PITCH_WIDTH,
+        fillcolor=background_color,
+        line=dict(color=pitch_color, width=line_width),
+        layer="below"
+    )
+
+    # Halfway line
+    fig.add_shape(
+        type="line",
+        x0=PITCH_LENGTH / 2, y0=0,
+        x1=PITCH_LENGTH / 2, y1=PITCH_WIDTH,
+        line=dict(color=pitch_color, width=line_width),
+        layer="above"
+    )
+
+    # Center circle and center spot
+    fig.add_shape(
+        type="circle",
+        x0=PITCH_LENGTH / 2 - 10,
+        y0=PITCH_WIDTH / 2 - 10,
+        x1=PITCH_LENGTH / 2 + 10,
+        y1=PITCH_WIDTH / 2 + 10,
+        line=dict(color=pitch_color, width=line_width),
+        fillcolor=transparent,
+        layer="above"
+    )
+    fig.add_shape(
+        type="circle",
+        x0=PITCH_LENGTH / 2 - 0.4,
+        y0=PITCH_WIDTH / 2 - 0.4,
+        x1=PITCH_LENGTH / 2 + 0.4,
+        y1=PITCH_WIDTH / 2 + 0.4,
+        line=dict(color=pitch_color, width=1),
+        fillcolor=pitch_color,
+        layer="above"
+    )
+
+    # Penalty areas
+    for x0, x1 in (
+        (0, 18),
+        (PITCH_LENGTH - 18, PITCH_LENGTH),
+    ):
+        fig.add_shape(
+            type="rect",
+            x0=x0, y0=18, x1=x1, y1=PITCH_WIDTH - 18,
+            line=dict(color=pitch_color, width=line_width),
+            fillcolor=transparent,
+            layer="above"
+        )
+
+    # Goal areas
+    for x0, x1 in (
+        (0, 6),
+        (PITCH_LENGTH - 6, PITCH_LENGTH),
+    ):
+        fig.add_shape(
+            type="rect",
+            x0=x0, y0=30, x1=x1, y1=PITCH_WIDTH - 30,
+            line=dict(color=pitch_color, width=line_width),
+            fillcolor=transparent,
+            layer="above"
+        )
+
+    # Penalty spots
+    for x in (12, PITCH_LENGTH - 12):
+        fig.add_shape(
+            type="circle",
+            x0=x - 0.4, y0=PITCH_WIDTH / 2 - 0.4,
+            x1=x + 0.4, y1=PITCH_WIDTH / 2 + 0.4,
+            line=dict(color=pitch_color, width=1),
+            fillcolor=pitch_color,
+            layer="above"
+        )
+
+    fig.update_layout(
+        template="plotly_white",
+        paper_bgcolor=paper_color or COLORS["card"],
+        plot_bgcolor=background_color,
+        height=height,
+        margin=dict(l=5, r=5, t=10, b=10),
+        showlegend=show_legend,
+    )
+
+    fig.update_xaxes(
+        range=list(x_range),
+        visible=False,
+        fixedrange=True,
+        constrain="domain",
+    )
+    fig.update_yaxes(
+        range=list(y_range[::-1] if invert_y else y_range),
+        visible=False,
+        scaleanchor="x",
+        scaleratio=1,
+        fixedrange=True,
+    )
+
+    return fig
+
 def create_shot_zone_pitch(zones_df=None):
 
     fig = go.Figure()
-
-    pitch_line = "#263746"
 
     zone_colors = {
         "outside penalty area": "#F0A43A",
@@ -228,95 +364,62 @@ def create_shot_zone_pitch(zones_df=None):
         "central penalty area": "#159B72"
     }
 
-    # Retrieve shot counts
     zone_counts = {}
-
     if zones_df is not None and not zones_df.empty:
-
         zone_counts = {
-            str(row["shot_zone"]).strip().casefold():
-                int(row["total_shots"])
+            str(row["shot_zone"]).strip().casefold(): int(row["total_shots"])
             for _, row in zones_df.iterrows()
         }
 
-    # Pitch background
-    fig.add_shape(
-        type="rect",
-        x0=0, y0=0,
-        x1=120, y1=80,
-        fillcolor="#FFFFFF",
-        line=dict(color=pitch_line, width=2),
-        layer="below"
+    # The pitch background is added before the zones; the pitch markings
+    # remain on top thanks to their layer="above".
+    add_football_pitch(
+        fig,
+        height=600,
+        x_range=(-4, 124),
+        y_range=(-2, 82),
     )
 
-    # Four non-overlapping zones
     zones = [
-
         {
             "name": "Outside penalty area",
-            "x0": 80, "x1": 120,
-            "y0": 0, "y1": 18,
-            "color": zone_colors["outside penalty area"],
-            "label_y": 69
+            "x0": 80, "x1": 120, "y0": 0, "y1": 18,
+            "color": zone_colors["outside penalty area"], "label_y": 69
         },
-
         {
             "name": "Outside penalty area",
-            "x0": 80, "x1": 120,
-            "y0": 62, "y1": 80,
-            "color": zone_colors["outside penalty area"],
-            "label_y": 69
+            "x0": 80, "x1": 120, "y0": 62, "y1": 80,
+            "color": zone_colors["outside penalty area"], "label_y": 69
         },
-
         {
             "name": "Central outside area",
-            "x0": 80, "x1": 102,
-            "y0": 18, "y1": 62,
-            "color": zone_colors["central outside area"],
-            "label_y": 40
+            "x0": 80, "x1": 102, "y0": 18, "y1": 62,
+            "color": zone_colors["central outside area"], "label_y": 40
         },
-
         {
             "name": "Penalty area",
-            "x0": 102, "x1": 120,
-            "y0": 18, "y1": 62,
-            "color": zone_colors["penalty area"],
-            "label_y": 24
+            "x0": 102, "x1": 120, "y0": 18, "y1": 62,
+            "color": zone_colors["penalty area"], "label_y": 24
         },
-
         {
             "name": "Central penalty area",
-            "x0": 102, "x1": 120,
-            "y0": 30, "y1": 50,
-            "color": zone_colors["central penalty area"],
-            "label_y": 40
+            "x0": 102, "x1": 120, "y0": 30, "y1": 50,
+            "color": zone_colors["central penalty area"], "label_y": 40
         }
     ]
 
-    # Draw zones and annotations
     for zone in zones:
-
-        key = zone["name"].casefold()
-
-        count = zone_counts.get(key, 0)
-
-        center_x = (
-            zone["x0"] + zone["x1"]
-        ) / 2
+        count = zone_counts.get(zone["name"].casefold(), 0)
+        center_x = (zone["x0"] + zone["x1"]) / 2
 
         fig.add_shape(
             type="rect",
-            x0=zone["x0"],
-            y0=zone["y0"],
-            x1=zone["x1"],
-            y1=zone["y1"],
+            x0=zone["x0"], y0=zone["y0"],
+            x1=zone["x1"], y1=zone["y1"],
             fillcolor=zone["color"],
             opacity=0.75,
-            line=dict(
-                color="#FFFFFF",
-                width=1
-            ),
-            layer="below"
+            line=dict(color="#FFFFFF", width=1),
+            layer="below",
         )
 
         fig.add_annotation(
@@ -324,472 +427,44 @@ def create_shot_zone_pitch(zones_df=None):
             y=zone["label_y"],
             text=f"<b>{count}</b><br>SHOTS",
             showarrow=False,
-            font=dict(
-                size=14,
-                color="#263746"
-            ),
+            font=dict(size=14, color="#263746"),
             bgcolor="rgba(255,255,255,0.88)",
             borderpad=5,
-            align="center"
+            align="center",
         )
 
-    # Pitch markings
-    fig.add_shape(
-        type="line",
-        x0=60, y0=0,
-        x1=60, y1=80,
-        line=dict(color=pitch_line, width=2)
-    )
-
-    fig.add_shape(
-        type="circle",
-        x0=50, y0=30,
-        x1=70, y1=50,
-        line=dict(color=pitch_line, width=2),
-        fillcolor="rgba(0,0,0,0)"
-    )
-
-    # Penalty areas
-    for x0, x1 in [(0, 18), (102, 120)]:
-
+    # Goals are drawn outside the touchlines.
+    for x0, x1 in ((-2, 0), (120, 122)):
         fig.add_shape(
             type="rect",
-            x0=x0, y0=18,
-            x1=x1, y1=62,
-            line=dict(color=pitch_line, width=2),
-            fillcolor="rgba(0,0,0,0)"
+            x0=x0, y0=36, x1=x1, y1=44,
+            line=dict(color="#B8C2CC", width=2),
+            fillcolor="rgba(0,0,0,0)",
+            layer="above",
         )
-
-    # Six-yard boxes
-    for x0, x1 in [(0, 6), (114, 120)]:
-
-        fig.add_shape(
-            type="rect",
-            x0=x0, y0=30,
-            x1=x1, y1=50,
-            line=dict(color=pitch_line, width=2),
-            fillcolor="rgba(0,0,0,0)"
-        )
-
-    # Spots
-    fig.add_trace(
-        go.Scatter(
-            x=[12, 108, 60],
-            y=[40, 40, 40],
-            mode="markers",
-            marker=dict(
-                size=5,
-                color=pitch_line
-            ),
-            showlegend=False,
-            hoverinfo="skip"
-        )
-    )
-
-    # Goals
-    for x0, x1 in [(-2, 0), (120, 122)]:
-
-        fig.add_shape(
-            type="rect",
-            x0=x0, y0=36,
-            x1=x1, y1=44,
-            line=dict(color=pitch_line, width=3),
-            fillcolor="rgba(0,0,0,0)"
-        )
-
-    # Layout
-    fig.update_layout(
-        template="plotly_white",
-        paper_bgcolor=COLORS["card"],
-        plot_bgcolor="#FFFFFF",
-        height=600,
-        margin=dict(l=5, r=5, t=10, b=10),
-        showlegend=False
-    )
-
-    fig.update_xaxes(
-        range=[-4, 124],
-        visible=False,
-        fixedrange=True
-    )
-
-    fig.update_yaxes(
-        range=[-2, 82],
-        visible=False,
-        scaleanchor="x",
-        scaleratio=1,
-        fixedrange=True
-    )
 
     return fig
-
-
-
 
 def create_progression_pitch():
-
-    fig = go.Figure()
-
-    pitch_color = "#263746"
-
-    # Pitch background
-    fig.add_shape(
-        type="rect",
-        x0=0, y0=0,
-        x1=120, y1=80,
-        fillcolor="#FFFFFF",
-        line=dict(color=pitch_color, width=2),
-        layer="below"
-    )
-
-    # Halfway line
-    fig.add_shape(
-        type="line",
-        x0=60, y0=0,
-        x1=60, y1=80,
-        line=dict(color=pitch_color, width=2)
-    )
-
-    # Center circle
-    fig.add_shape(
-        type="circle",
-        x0=50, y0=30,
-        x1=70, y1=50,
-        line=dict(color=pitch_color, width=2),
-        fillcolor="rgba(0,0,0,0)"
-    )
-
-    # Penalty areas
-    for x0, x1 in [(0, 18), (102, 120)]:
-
-        fig.add_shape(
-            type="rect",
-            x0=x0, y0=18,
-            x1=x1, y1=62,
-            line=dict(color=pitch_color, width=2),
-            fillcolor="rgba(0,0,0,0)"
-        )
-
-    # Six-yard boxes
-    for x0, x1 in [(0, 6), (114, 120)]:
-
-        fig.add_shape(
-            type="rect",
-            x0=x0, y0=30,
-            x1=x1, y1=50,
-            line=dict(color=pitch_color, width=2),
-            fillcolor="rgba(0,0,0,0)"
-        )
-
-    # Penalty spots
-    fig.add_trace(
-        go.Scatter(
-            x=[12, 108, 60],
-            y=[40, 40, 40],
-            mode="markers",
-            marker=dict(
-                size=5,
-                color=pitch_color
-            ),
-            showlegend=False,
-            hoverinfo="skip"
-        )
-    )
-
-    # Layout
-    fig.update_layout(
-        template="plotly_white",
-        paper_bgcolor=COLORS["card"],
-        plot_bgcolor="#FFFFFF",
-        height=600,
-        margin=dict(l=5, r=5, t=10, b=10),
-        showlegend=False
-    )
-
-    fig.update_xaxes(
-        range=[-2, 122],
-        visible=False,
-        fixedrange=True
-    )
-
-    fig.update_yaxes(
-        range=[-2, 82],
-        visible=False,
-        scaleanchor="x",
-        scaleratio=1,
-        fixedrange=True
-    )
-
-    return fig
-
-
+    return add_football_pitch(go.Figure(), height=600)
 
 def create_final_third_pitch():
-
-    fig = go.Figure()
-
-    pitch_color = "#263746"
-
-    # Pitch background
+    fig = add_football_pitch(go.Figure(), height=550)
+    # Highlight the final third beneath the data traces and pitch markings.
     fig.add_shape(
         type="rect",
-        x0=0, y0=0,
-        x1=120, y1=80,
-        fillcolor="#FFFFFF",
-        line=dict(color=pitch_color, width=2),
-        layer="below"
-    )
-
-    # Highlight final third
-    fig.add_shape(
-        type="rect",
-        x0=80, y0=0,
-        x1=120, y1=80,
+        x0=80, y0=0, x1=120, y1=80,
         fillcolor="rgba(21,155,114,0.13)",
-        line=dict(
-            color="#159B72",
-            width=2,
-            dash="dash"
-        ),
-        layer="below"
+        line=dict(color="#159B72", width=2, dash="dash"),
+        layer="below",
     )
-
-    # Halfway line
-    fig.add_shape(
-        type="line",
-        x0=60, y0=0,
-        x1=60, y1=80,
-        line=dict(color=pitch_color, width=2)
-    )
-
-    # Center circle
-    fig.add_shape(
-        type="circle",
-        x0=50, y0=30,
-        x1=70, y1=50,
-        line=dict(color=pitch_color, width=2),
-        fillcolor="rgba(0,0,0,0)"
-    )
-
-    # Penalty areas
-    for x0, x1 in [(0, 18), (102, 120)]:
-
-        fig.add_shape(
-            type="rect",
-            x0=x0, y0=18,
-            x1=x1, y1=62,
-            line=dict(color=pitch_color, width=2),
-            fillcolor="rgba(0,0,0,0)"
-        )
-
-    # Six-yard boxes
-    for x0, x1 in [(0, 6), (114, 120)]:
-
-        fig.add_shape(
-            type="rect",
-            x0=x0, y0=30,
-            x1=x1, y1=50,
-            line=dict(color=pitch_color, width=2),
-            fillcolor="rgba(0,0,0,0)"
-        )
-
-    # Layout
-    fig.update_layout(
-        template="plotly_white",
-        paper_bgcolor=COLORS["card"],
-        plot_bgcolor="#FFFFFF",
-        height=550,
-        margin=dict(l=5, r=5, t=10, b=10),
-        showlegend=False
-    )
-
-    fig.update_xaxes(
-        range=[-2, 122],
-        visible=False,
-        fixedrange=True
-    )
-
-    fig.update_yaxes(
-        range=[-2, 82],
-        visible=False,
-        scaleanchor="x",
-        scaleratio=1,
-        fixedrange=True
-    )
-
     return fig
-
-
 
 def create_between_lines_pitch():
-
-    fig = go.Figure()
-
-    pitch_color = "#263746"
-
-    # Pitch background
-    fig.add_shape(
-        type="rect",
-        x0=0, y0=0,
-        x1=120, y1=80,
-        fillcolor="#FFFFFF",
-        line=dict(color=pitch_color, width=2),
-        layer="below"
-    )
-
-    # Halfway line
-    fig.add_shape(
-        type="line",
-        x0=60, y0=0,
-        x1=60, y1=80,
-        line=dict(color=pitch_color, width=2)
-    )
-
-    # Center circle
-    fig.add_shape(
-        type="circle",
-        x0=50, y0=30,
-        x1=70, y1=50,
-        line=dict(color=pitch_color, width=2),
-        fillcolor="rgba(0,0,0,0)"
-    )
-
-    # Penalty areas
-    for x0, x1 in [(0, 18), (102, 120)]:
-
-        fig.add_shape(
-            type="rect",
-            x0=x0, y0=18,
-            x1=x1, y1=62,
-            line=dict(color=pitch_color, width=2),
-            fillcolor="rgba(0,0,0,0)"
-        )
-
-    # Six-yard boxes
-    for x0, x1 in [(0, 6), (114, 120)]:
-
-        fig.add_shape(
-            type="rect",
-            x0=x0, y0=30,
-            x1=x1, y1=50,
-            line=dict(color=pitch_color, width=2),
-            fillcolor="rgba(0,0,0,0)"
-        )
-
-    fig.update_layout(
-        template="plotly_white",
-        paper_bgcolor=COLORS["card"],
-        plot_bgcolor="#FFFFFF",
-        height=550,
-        margin=dict(l=5, r=5, t=10, b=10),
-        showlegend=False
-    )
-
-    fig.update_xaxes(
-        range=[-2, 122],
-        visible=False,
-        fixedrange=True
-    )
-
-    fig.update_yaxes(
-        range=[-2, 82],
-        visible=False,
-        scaleanchor="x",
-        scaleratio=1,
-        fixedrange=True
-    )
-
-    return fig
-
+    return add_football_pitch(go.Figure(), height=550)
 
 def create_defensive_pitch():
-
-    fig = go.Figure()
-
-    pitch_color = "#263746"
-
-    # Terrain
-    fig.add_shape(
-        type="rect",
-        x0=0, y0=0,
-        x1=120, y1=80,
-        fillcolor="#FFFFFF",
-        line=dict(color=pitch_color, width=2),
-        layer="below"
-    )
-
-    # Ligne médiane
-    fig.add_shape(
-        type="line",
-        x0=60, y0=0,
-        x1=60, y1=80,
-        line=dict(color=pitch_color, width=2),
-        layer="below"
-    )
-
-    # Cercle central
-    fig.add_shape(
-        type="circle",
-        x0=50, y0=30,
-        x1=70, y1=50,
-        line=dict(color=pitch_color, width=2),
-        fillcolor="rgba(0,0,0,0)",
-        layer="below"
-    )
-
-    # Surfaces
-    for x0, x1 in [(0, 18), (102, 120)]:
-        fig.add_shape(
-            type="rect",
-            x0=x0, y0=18,
-            x1=x1, y1=62,
-            line=dict(color=pitch_color, width=2),
-            fillcolor="rgba(0,0,0,0)"
-        )
-
-    # Surfaces de but
-    for x0, x1 in [(0, 6), (114, 120)]:
-        fig.add_shape(
-            type="rect",
-            x0=x0, y0=30,
-            x1=x1, y1=50,
-            line=dict(color=pitch_color, width=2),
-            fillcolor="rgba(0,0,0,0)",
-            layer="below"
-        )
-
-    fig.update_layout(
-        template="plotly_white",
-        paper_bgcolor=COLORS["card"],
-        plot_bgcolor="#FFFFFF",
-        height=600,
-        margin=dict(l=5, r=5, t=10, b=10),
-        showlegend=True,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="left",
-            x=0
-        )
-    )
-
-    fig.update_xaxes(
-        range=[-2, 122],
-        visible=False,
-        fixedrange=True
-    )
-
-    fig.update_yaxes(
-        range=[-2, 82],
-        visible=False,
-        scaleanchor="x",
-        scaleratio=1,
-        fixedrange=True
-    )
-
-    return fig
-
+    return add_football_pitch(go.Figure(), height=600, show_legend=True)
 
 def add_progressive_passes_to_pitch(fig, passes):
 
@@ -886,8 +561,6 @@ def add_progressive_passes_to_pitch(fig, passes):
 
     return fig
 
-
-
 def add_progressive_carries_to_pitch(fig, carries):
 
     if carries is None or carries.empty:
@@ -953,9 +626,6 @@ def add_progressive_carries_to_pitch(fig, carries):
         )
 
     return fig
-
-
-
 
 def add_final_third_passes_to_pitch(fig, passes):
 
@@ -1052,9 +722,6 @@ def add_final_third_passes_to_pitch(fig, passes):
 
     return fig
 
-
-
-
 def add_between_lines_heatmap(fig, receptions):
 
     if receptions is None or receptions.empty:
@@ -1119,7 +786,6 @@ def add_between_lines_heatmap(fig, receptions):
     )
 
     return fig
-
 
 def add_defensive_actions_to_pitch(fig, events):
 
@@ -1194,8 +860,6 @@ def add_defensive_actions_to_pitch(fig, events):
 
     return fig
 
-
-
 def display_progression_pitch(
     results,
     player=None,
@@ -1205,8 +869,8 @@ def display_progression_pitch(
     st.subheader("Progression map")
 
     st.caption(
-        "Visualisation des passes et conduites progressives "
-        "de l'AS Monaco."
+        "Visualization of progressive passes and carries "
+        "by AS Monaco."
     )
 
     passes = results.get(
@@ -1265,8 +929,6 @@ def display_progression_pitch(
         f"Progressive carries: {len(carries):,}"
     )
 
-
-
 def filter_progression_events(
     events,
     player=None,
@@ -1300,8 +962,6 @@ def filter_progression_events(
 
     return filtered.reset_index(drop=True)
 
-
-
 def filter_defensive_events(
     events,
     player=None,
@@ -1329,7 +989,6 @@ def filter_defensive_events(
         ]
 
     return filtered.reset_index(drop=True)
-
 
 def get_defensive_events(results):
     event_keys = [
@@ -1360,9 +1019,6 @@ def get_defensive_events(results):
         return pd.DataFrame()
 
     return pd.concat(frames, ignore_index=True)
-
-
-
 
 def display_progression_filters(results):
 
@@ -1449,8 +1105,6 @@ def display_progression_filters(results):
 
     return player, match_id
 
-
-
 def display_final_third_analysis(
     results,
     player=None,
@@ -1460,7 +1114,7 @@ def display_final_third_analysis(
     st.subheader("Final Third Entries")
 
     st.caption(
-        "Analyse des passes arrivant dans le dernier tiers offensif."
+        "Analysis of passes entering the attacking final third."
     )
 
     # 1. Retrieve events
@@ -1514,8 +1168,6 @@ def display_final_third_analysis(
         }
     )
 
-
-
 def display_between_lines_analysis(
     results,
     player=None,
@@ -1525,7 +1177,7 @@ def display_between_lines_analysis(
     st.subheader("Between-the-Lines Receptions")
 
     st.caption(
-        "Analyse des zones de réception entre les lignes adverses."
+        "Analysis of reception zones between the opposition lines."
     )
 
     receptions = results.get(
@@ -1559,8 +1211,6 @@ def display_between_lines_analysis(
             "responsive": True
         }
     )
-
-
 
 def display_defensive_filters(results):
 
@@ -1620,8 +1270,6 @@ def display_defensive_filters(results):
 
     return player, match_id
 
-
-
 def display_defensive_kpis(results):
 
     configurations = [
@@ -1651,8 +1299,6 @@ def display_defensive_kpis(results):
                 value=f"{int(total):,}"
             )
 
-
-
 def display_defensive_pitch(
     results,
     player=None,
@@ -1662,8 +1308,8 @@ def display_defensive_pitch(
     st.subheader("Defensive Actions Map")
 
     st.caption(
-        "Localisation des interceptions, tacles, pressings, "
-        "récupérations, blocs et fautes."
+        "Locations of interceptions, tackles, pressures, "
+        "recoveries, blocks, and fouls."
     )
 
     events = get_defensive_events(results)
@@ -1699,14 +1345,12 @@ def display_defensive_pitch(
         f"Total defensive actions displayed: {len(events):,}"
     )
 
-
-
 def display_recovery_zones(results):
 
     st.subheader("Ball Recovery Zones")
 
     st.caption(
-        "Répartition spatiale des récupérations de balle."
+        "Spatial distribution of ball recoveries."
     )
 
     section = results.get("recovery_zones", {})
@@ -1775,14 +1419,13 @@ def display_recovery_zones(results):
             hide_index=True
         )
 
-
 def display_ppda(results):
 
     st.subheader("Pressing Intensity — PPDA")
 
     st.caption(
-        "Passes adverses autorisées par action défensive de Monaco "
-        "dans la zone définie par ton modèle."
+        "Opposition passes allowed per AS Monaco defensive action "
+        "in the area defined by the model."
     )
 
     ppda_section = results.get("ppda", {})
@@ -1878,48 +1521,52 @@ def display_ppda(results):
 # DATA LOADING
 # =========================================
 
-@st.cache_data(ttl=300)
-def load_offensive_analysis():
-
+def _ensure_database_exists():
+    """Raise a clear error when the configured database is missing."""
     if not DB_PATH.exists():
         raise FileNotFoundError(
-            f"Base de données introuvable : {DB_PATH}"
+            f"Database not found: {DB_PATH}"
         )
+
+@st.cache_data(ttl=CACHE_TTL_SECONDS)
+def load_offensive_analysis():
+
+    _ensure_database_exists()
 
     return run_offensive_analysis(
         database_path=DB_PATH,
         team_id=TEAM_ID
     )
 
-
-
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_TTL_SECONDS)
 def load_progression_analysis():
 
-    if not DB_PATH.exists():
-        raise FileNotFoundError(
-            f"Base de données introuvable : {DB_PATH}"
-        )
+    _ensure_database_exists()
 
     return run_progression_analysis(
         database_path=DB_PATH,
         team_id=TEAM_ID
     )
 
-
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_TTL_SECONDS)
 def load_defensive_analysis():
 
-    if not DB_PATH.exists():
-        raise FileNotFoundError(
-            f"Base de données introuvable : {DB_PATH}"
-        )
+    _ensure_database_exists()
 
     return run_defensive_analysis(
         database_path=DB_PATH,
         team_id=TEAM_ID
     )
 
+@st.cache_data(ttl=CACHE_TTL_SECONDS)
+def load_collective_analysis():
+
+    _ensure_database_exists()
+
+    return run_collective_analysis(
+        database_path=DB_PATH,
+        team_id=TEAM_ID
+    )
 
 def display_defensive_analysis():
 
@@ -2011,7 +1658,6 @@ def display_defensive_analysis():
         f"Team ID: {TEAM_ID} | Database: {DB_PATH.name}"
     )
 
-
 def display_progression_kpis(results):
 
     kpi_config = [
@@ -2095,8 +1741,891 @@ def display_progression_kpis(results):
                     f"Out of {int(denominator):,} events"
                 )
 
+def display_collective_kpis(results):
 
+    configurations = [
+        (
+            "pass_network",
+            "successful_passes",
+            "Successful Passes",
+            False
+        ),
+        (
+            "pass_network",
+            "players",
+            "Players Involved",
+            False
+        ),
+        (
+            "chance_creation",
+            "chance_creating_passes",
+            "Chance-Creating Passes",
+            False
+        ),
+        (
+            "chance_creation",
+            "xg_created",
+            "xG Created",
+            True
+        ),
+        (
+            "attacking_patterns",
+            "possessions",
+            "Attacking Sequences",
+            False
+        ),
+    ]
 
+    st.subheader("Collective Performance Indicators")
+
+    columns = st.columns(3)
+
+    for index, (section_key, metric_key, label, is_xg) in enumerate(configurations):
+
+        section = results.get(section_key, {})
+
+        summary = (
+            section.get("summary", {})
+            if isinstance(section, dict)
+            else {}
+        )
+
+        value = summary.get(metric_key, 0)
+
+        if value is None:
+            value = 0
+
+        if is_xg:
+            display_value = f"{float(value):.2f}"
+        else:
+            display_value = f"{value:,.0f}"
+
+        with columns[index % 3]:
+
+            st.metric(
+                label=label,
+                value=display_value
+            )
+
+def create_pass_network_pitch(network):
+
+    fig = go.Figure()
+
+    nodes = network.get("nodes", pd.DataFrame())
+    edges = network.get("edges", pd.DataFrame())
+
+    if nodes is None or nodes.empty:
+        return add_football_pitch(fig, height=600)
+
+    # Connections between players
+    if edges is not None and not edges.empty:
+        node_positions = (
+            nodes.drop_duplicates("player")
+            .set_index("player")[["x", "y"]]
+            .to_dict("index")
+        )
+
+        for _, edge in edges.iterrows():
+            source = edge["source"]
+            target = edge["target"]
+
+            if source not in node_positions or target not in node_positions:
+                continue
+
+            start = node_positions[source]
+            end = node_positions[target]
+            passes_count = edge.get("passes", 0)
+
+            fig.add_trace(
+                go.Scatter(
+                    x=[start["x"], end["x"]],
+                    y=[start["y"], end["y"]],
+                    mode="lines",
+                    line=dict(
+                        color="#3976B9",
+                        width=max(1, min(7, 1 + float(passes_count) / 3)),
+                    ),
+                    opacity=0.55,
+                    hovertemplate=(
+                        f"<b>{source}</b> → <b>{target}</b><br>"
+                        f"Passes: {passes_count}<extra></extra>"
+                    ),
+                    showlegend=False,
+                )
+            )
+
+    # Player positions
+    custom_columns = ["passes", "receptions"]
+    customdata = (
+        nodes[custom_columns].to_numpy()
+        if set(custom_columns).issubset(nodes.columns)
+        else None
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=nodes["x"],
+            y=nodes["y"],
+            mode="markers+text",
+            text=nodes["player"],
+            textposition="top center",
+            marker=dict(
+                size=18,
+                color="#159B72",
+                line=dict(color="#FFFFFF", width=2),
+            ),
+            customdata=customdata,
+            hovertemplate=(
+                "<b>%{text}</b><br>"
+                "Passes: %{customdata[0]}<br>"
+                "Receptions: %{customdata[1]}<extra></extra>"
+            ) if customdata is not None else "<b>%{text}</b><extra></extra>",
+            showlegend=False,
+        )
+    )
+
+    # The shared pitch is used for all spatial maps.
+    return add_football_pitch(
+        fig,
+        height=600,
+        x_range=(0, 120),
+        y_range=(0, 80),
+    )
+
+def display_pass_network_filters(results):
+
+    network = results.get("pass_network", {})
+
+    nodes = network.get("nodes", pd.DataFrame())
+    edges = network.get("edges", pd.DataFrame())
+
+    if not isinstance(nodes, pd.DataFrame) or nodes.empty:
+        st.warning("No nodes available.")
+        return None, None
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        players = (
+            sorted(nodes["player"].dropna().unique().tolist())
+            if "player" in nodes.columns
+            else []
+        )
+
+        selected_player = st.selectbox(
+            "Select player",
+            ["All players"] + players,
+            key="pass_network_player_filter"
+        )
+
+    with col2:
+
+        matches = (
+            sorted(
+                nodes["match_id"].dropna().unique().tolist(),
+                key=str,
+                reverse=True
+            )
+            if "match_id" in nodes.columns
+            else []
+        )
+
+        selected_match = st.selectbox(
+            "Select match",
+            ["All matches"] + matches,
+            index=1 if matches else 0,
+            format_func=lambda x: (
+                "All matches" if x == "All matches"
+                else f"Match {x}"
+            ),
+            key="pass_network_match_filter"
+        )
+
+    player = (
+        None if selected_player == "All players"
+        else selected_player
+    )
+
+    match_id = (
+        None if selected_match == "All matches"
+        else selected_match
+    )
+
+    return player, match_id
+
+def filter_pass_network(
+    dataframe,
+    player=None,
+    match_id=None
+):
+
+    if not isinstance(dataframe, pd.DataFrame) or dataframe.empty:
+        return pd.DataFrame()
+
+    filtered = dataframe.copy()
+
+    if player is not None:
+
+        if "player" not in filtered.columns:
+            return pd.DataFrame()
+
+        filtered = filtered[
+            filtered["player"] == player
+        ]
+
+    if match_id is not None:
+
+        if "match_id" not in filtered.columns:
+            return pd.DataFrame()
+
+        filtered = filtered[
+            filtered["match_id"].astype(str)
+            == str(match_id)
+        ]
+
+    return filtered.reset_index(drop=True)
+
+def display_pass_network(
+    results,
+    player=None,
+    match_id=None
+):
+
+    st.subheader("Pass Network")
+
+    st.caption(
+        "Connections between players based on completed passes."
+    )
+
+    network = results.get("pass_network", {})
+
+    if not isinstance(network, dict):
+        st.info("Pass network unavailable.")
+        return
+
+    summary = network.get("summary", {})
+    nodes = network.get("nodes", pd.DataFrame())
+    edges = network.get("edges", pd.DataFrame())
+
+    # Apply match filter to nodes and edges
+    nodes = filter_pass_network(
+        nodes,
+        match_id=match_id
+    )
+
+    edges = filter_pass_network(
+        edges,
+        match_id=match_id
+    )
+
+    # Apply player filter to edges first
+    if player is not None:
+
+        edges = edges[
+            (edges["source"] == player)
+            | (edges["target"] == player)
+        ].copy()
+
+        # Keep all players involved in the filtered connections
+        connected_players = set(edges["source"]) | set(edges["target"])
+
+        nodes = nodes[
+            nodes["player"].isin(connected_players)
+        ].copy()
+
+    if match_id is not None:
+        edges = filter_pass_network(
+            edges,
+            match_id=match_id
+        )
+
+    if player is not None:
+
+        if not edges.empty:
+            edges = edges[
+                (edges["source"] == player)
+                | (edges["target"] == player)
+            ].copy()
+
+    if nodes.empty:
+        st.info("No player connections available for these filters.")
+        return
+
+    # Filtered network
+    filtered_network = {
+        "nodes": nodes,
+        "edges": edges
+    }
+
+    # KPIs
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric(
+            "Successful Passes",
+            f"{int(edges['passes'].sum()):,}"
+            if "passes" in edges.columns else "0"
+        )
+
+    with col2:
+        st.metric(
+            "Players",
+            f"{nodes['player'].nunique():,}"
+        )
+
+    with col3:
+        st.metric(
+            "Connections",
+            f"{len(edges):,}"
+        )
+
+    # Pass network pitch
+    fig = create_pass_network_pitch(filtered_network)
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        key="collective_pass_network"
+    )
+
+    # Strongest connections
+    if not edges.empty:
+
+        st.markdown("#### Strongest passing connections")
+
+        st.dataframe(
+            edges.sort_values(
+                "passes",
+                ascending=False
+            ).head(15),
+            use_container_width=True,
+            hide_index=True
+        )
+
+def display_player_heatmaps(results):
+
+    st.subheader("Player Activity Heatmaps")
+
+    st.caption(
+        "Spatial distribution of actions performed by each player."
+    )
+
+    heatmaps = results.get("heatmaps", {})
+
+    if not isinstance(heatmaps, dict):
+        st.info("Heatmap data unavailable.")
+        return
+
+    events = heatmaps.get("events", pd.DataFrame())
+    zones = heatmaps.get("zones", pd.DataFrame())
+
+    if events.empty or zones.empty:
+        st.info("No player activity data available.")
+        return
+
+    players = sorted(
+        events["player_name"].dropna().unique().tolist()
+    )
+
+    if not players:
+        st.info("No players available.")
+        return
+
+    selected_player = st.selectbox(
+        "Select player",
+        players,
+        key="collective_heatmap_player"
+    )
+
+    player_events = events[
+        events["player_name"] == selected_player
+    ].copy()
+
+    player_zones = zones[
+        zones["player_name"] == selected_player
+    ].copy()
+
+    if player_events.empty:
+        st.info("No activity for this player.")
+        return
+
+    # Clean coordinates
+    player_events["location_x"] = pd.to_numeric(
+        player_events["location_x"],
+        errors="coerce"
+    )
+
+    player_events["location_y"] = pd.to_numeric(
+        player_events["location_y"],
+        errors="coerce"
+    )
+
+    player_events = player_events.dropna(
+        subset=["location_x", "location_y"]
+    )
+
+    if player_events.empty:
+        st.info("No valid player coordinates available.")
+        return
+
+    fig = go.Figure()
+
+    # Activity heatmap
+    fig.add_trace(
+        go.Histogram2d(
+            x=player_events["location_x"],
+            y=player_events["location_y"],
+            xbins=dict(start=0, end=120, size=5),
+            ybins=dict(start=0, end=80, size=5),
+            colorscale=[
+                [0, "rgba(46,125,50,0)"],
+                [0.01, "rgba(245,203,120,0.45)"],
+                [0.35, "rgba(240,164,58,0.75)"],
+                [1, "rgba(192,57,43,0.95)"]
+            ],
+            colorbar=dict(title="Actions"),
+            hovertemplate=(
+                "X: %{x}<br>"
+                "Y: %{y}<br>"
+                "Actions: %{z}"
+                "<extra></extra>"
+            )
+        )
+    )
+
+    # Add the same pitch used in the other visualizations.
+    add_football_pitch(
+        fig,
+        height=600,
+        x_range=(0, 120),
+        y_range=(0, 80),
+        invert_y=True,
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config={
+            "displayModeBar": False,
+            "responsive": True
+        },
+        key="collective_player_heatmap"
+    )
+
+    st.metric(
+        "Player Actions",
+        f"{len(player_events):,}"
+    )
+
+    if not player_zones.empty:
+        st.dataframe(
+            player_zones.sort_values(
+                "events",
+                ascending=False
+            ),
+            use_container_width=True,
+            hide_index=True
+        )
+
+def display_space_occupation(results):
+
+    st.subheader("Space Occupation")
+
+    st.caption(
+        "Distribution of actions across longitudinal zones "
+        "and the five pitch lanes."
+    )
+
+    if not isinstance(results, dict):
+        st.info("Space occupation data unavailable.")
+        return
+
+    occupation = results.get("space_occupation", {})
+    if not isinstance(occupation, dict):
+        st.info("Space occupation data unavailable.")
+        return
+
+    summary = occupation.get("summary", {})
+    if not isinstance(summary, dict):
+        summary = {}
+
+    zones = occupation.get("zones", pd.DataFrame())
+
+    if not isinstance(zones, pd.DataFrame) or zones.empty:
+        st.info("No space occupation data available.")
+        return
+
+    st.metric(
+        "Total Actions",
+        f"{summary.get('events', 0):,}"
+    )
+
+    # Columns actually returned by global_analysis.py
+    required = {
+        "longitudinal_zone",
+        "lateral_zone",
+        "events"
+    }
+
+    if not required.issubset(zones.columns):
+        st.warning(
+            f"Unexpected space occupation data structure. "
+            f"Columns found: {list(zones.columns)}"
+        )
+        st.dataframe(zones, use_container_width=True)
+        return
+
+    # Pitch zone order
+    x_order = ["Defensive", "Middle", "Attacking"]
+
+    y_order = [
+        "Couloir haut",
+        "Demi-espace haut",
+        "Axe",
+        "Demi-espace bas",
+        "Couloir bas"
+    ]
+
+    # Conversion en tableau 3 x 5
+    pivot = zones.pivot_table(
+        index="lateral_zone",
+        columns="longitudinal_zone",
+        values="events",
+        aggfunc="sum",
+        fill_value=0,
+        observed=False
+    )
+
+    pivot = pivot.reindex(
+        index=y_order,
+        columns=x_order,
+        fill_value=0
+    )
+
+    # Center coordinates of the 15 zones
+    x_centers = [20, 60, 100]
+    y_centers = [8, 24, 40, 56, 72]
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Heatmap(
+            z=pivot.values,
+            x=x_centers,
+            y=y_centers,
+            colorscale="YlGn",
+            showscale=True,
+            colorbar=dict(
+                title="Actions"
+            ),
+            text=pivot.values,
+            texttemplate="%{text}",
+            textfont=dict(
+                color="#172B4D",
+                size=14
+            ),
+            hovertemplate=(
+                "Actions : %{z}<br>"
+                "Position : (%{x}, %{y})"
+                "<extra></extra>"
+            )
+        )
+    )
+
+    # Add the shared pitch
+    add_football_pitch(
+        fig,
+        invert_y=True,
+        height=500,
+        show_legend=False
+    )
+
+    fig.update_layout(
+        height=500,
+        margin=dict(l=10, r=10, t=20, b=10),
+        paper_bgcolor=COLORS["card"],
+        plot_bgcolor=COLORS["card"],
+        xaxis=dict(
+            range=[-2, 122],
+            showticklabels=False,
+            showgrid=False,
+            zeroline=False,
+            fixedrange=True
+        ),
+        yaxis=dict(
+            range=[82, -2],
+            showticklabels=False,
+            showgrid=False,
+            zeroline=False,
+            fixedrange=True,
+            scaleanchor="x",
+            scaleratio=1
+        )
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        key="collective_space_occupation"
+    )
+
+    # Detailed table kept below the pitch
+    st.markdown("#### Space occupation details")
+
+    st.dataframe(
+        zones.sort_values(
+            "events",
+            ascending=False
+        ),
+        use_container_width=True,
+        hide_index=True
+    )
+
+def display_chance_creation(results):
+
+    st.subheader("Chance Creation")
+
+    st.caption(
+        "Shot-assisted passes and their xG contribution."
+    )
+
+    chance = results.get("chance_creation", {})
+
+    if not isinstance(chance, dict):
+        st.info("Chance creation data unavailable.")
+        return
+
+    summary = chance.get("summary", {})
+    passes = chance.get("passes", pd.DataFrame())
+    zones = chance.get("zones", pd.DataFrame())
+    shots = chance.get("shots", pd.DataFrame())
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric(
+            "Chance-Creating Passes",
+            f"{summary.get('chance_creating_passes', 0):,}"
+        )
+
+    with col2:
+        st.metric(
+            "Linked Shots",
+            f"{summary.get('linked_shots', 0):,}"
+        )
+
+    with col3:
+        st.metric(
+            "xG Created",
+            f"{summary.get('xg_created', 0):.2f}"
+        )
+
+    if not zones.empty:
+
+        st.markdown("#### Chance creation zones")
+
+        fig = go.Figure(
+            go.Bar(
+                x=zones["x_zone"].astype(str)
+                    + " / "
+                    + zones["y_zone"].astype(str),
+                y=zones["chance_passes"],
+                marker_color="#159B72",
+                text=zones["chance_passes"],
+                textposition="outside",
+                hovertemplate=(
+                    "%{x}<br>"
+                    "Chance passes: %{y}"
+                    "<extra></extra>"
+                )
+            )
+        )
+
+        fig.update_layout(
+            template="plotly_white",
+            paper_bgcolor=COLORS["card"],
+            plot_bgcolor=COLORS["card"],
+            height=380,
+            xaxis_title="Pitch zone",
+            yaxis_title="Chance-creating passes"
+        )
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            key="collective_chance_zones"
+        )
+
+    if not passes.empty:
+
+        with st.expander("View chance-creating passes"):
+            st.dataframe(
+                passes,
+                use_container_width=True,
+                hide_index=True
+            )
+
+    if not shots.empty:
+
+        with st.expander("View linked shots"):
+            st.dataframe(
+                shots,
+                use_container_width=True,
+                hide_index=True
+            )
+
+def display_attacking_patterns(results):
+
+    st.subheader("Attacking Patterns")
+
+    st.caption(
+        "Attacking sequences and passing combinations "
+        "between AS Monaco players."
+    )
+
+    patterns = results.get("attacking_patterns", {})
+
+    if not isinstance(patterns, dict):
+        st.info("Attacking patterns unavailable.")
+        return
+
+    summary = patterns.get("summary", {})
+    combinations = patterns.get(
+        "combinations",
+        pd.DataFrame()
+    )
+    sequences = patterns.get(
+        "sequences",
+        pd.DataFrame()
+    )
+
+    if not combinations.empty:
+
+        st.markdown("#### Most frequent combinations")
+
+        st.dataframe(
+            combinations.sort_values(
+                "passes",
+                ascending=False
+            ).head(15),
+            use_container_width=True,
+            hide_index=True
+        )
+
+    if not sequences.empty:
+
+        st.markdown("#### Attacking sequences")
+
+        st.dataframe(
+            sequences.tail(20),
+            use_container_width=True,
+            hide_index=True
+        )
+
+def display_collective_analysis():
+
+    st.markdown(
+        '<div class="section-label">'
+        'COLLECTIVE ANALYSIS'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    st.title("Collective Performance")
+
+    st.caption(
+        f"Collective analysis | {TEAM_NAME}"
+    )
+
+    try:
+        with st.spinner(
+            "Calculating collective analysis..."
+        ):
+            results = load_collective_analysis()
+
+    except Exception as error:
+        st.error(
+            f"Unable to load collective analysis: {error}"
+        )
+        return
+
+    # 01 — KPIs
+    st.markdown(
+        '<div class="section-label">01 / Overview</div>',
+        unsafe_allow_html=True
+    )
+
+    display_collective_kpis(results)
+
+    st.divider()
+
+    # 02 — Passing network
+    st.markdown(
+        '<div class="section-label">02 / Passing connections</div>',
+        unsafe_allow_html=True
+    )
+
+    selected_player, selected_match = (
+        display_pass_network_filters(results)
+    )
+
+    display_pass_network(
+        results,
+        player=selected_player,
+        match_id=selected_match
+    )
+
+    st.divider()
+
+    # 03 — Player heatmaps
+    st.markdown(
+        '<div class="section-label">03 / Player activity</div>',
+        unsafe_allow_html=True
+    )
+
+    display_player_heatmaps(results)
+
+    st.divider()
+
+    # 04 — Space occupation
+    st.markdown(
+        '<div class="section-label">04 / Space occupation</div>',
+        unsafe_allow_html=True
+    )
+
+    display_space_occupation(results)
+
+    st.divider()
+
+    # 05 — Chance creation
+    st.markdown(
+        '<div class="section-label">05 / Chance creation</div>',
+        unsafe_allow_html=True
+    )
+
+    display_chance_creation(results)
+
+    st.divider()
+
+    # 06 — Attacking patterns
+    st.markdown(
+        '<div class="section-label">06 / Attacking patterns</div>',
+        unsafe_allow_html=True
+    )
+
+    display_attacking_patterns(results)
+
+    st.divider()
+
+    st.caption(
+        "FOOTBALL INTELLIGENCE PLATFORM | "
+        "COLLECTIVE ANALYSIS ENGINE"
+    )
+
+    st.caption(
+        f"Team ID: {TEAM_ID} | Database: {DB_PATH.name}"
+    )
 
 def display_progression_analysis():
 
@@ -2136,7 +2665,7 @@ def display_progression_analysis():
     selected_player, selected_match = (
         display_progression_filters(results)
     )
-        
+
     st.divider()
 
     display_progression_pitch(
@@ -2162,60 +2691,8 @@ def display_progression_analysis():
     )
 
 # =========================================
-# HEADER
+# NAVIGATION
 # =========================================
-
-st.markdown(
-    """
-    <style>
-    .dashboard-header {
-        background: #FFFFFF;
-        border: 1px solid #DFE6EE;
-        border-radius: 14px;
-        padding: 25px 30px;
-        margin-bottom: 25px;
-    }
-
-    .dashboard-subtitle {
-        color: #718096;
-        font-size: 12px;
-        font-weight: 700;
-        letter-spacing: 1.5px;
-    }
-
-    .team-name {
-        color: #159B72;
-        font-size: 18px;
-        font-weight: 700;
-    }
-
-    .dashboard-description {
-        color: #718096;
-        font-size: 14px;
-        margin-bottom: 0;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
-st.markdown(
-    f"""
-    <div class="dashboard-header">
-        <div class="dashboard-subtitle">
-            FOOTBALL INTELLIGENCE PLATFORM
-        </div>
-        <h1>Global Analysis</h1>
-        <div class="team-name">{TEAM_NAME}</div>
-        <p class="dashboard-description">
-            Analyse des performances offensives et des situations
-            de création d'occasions.
-        </p>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
 
 def display_navigation():
 
@@ -2224,11 +2701,9 @@ def display_navigation():
 
     if st.session_state.current_page != "home":
 
-        if st.button("← Retour à l'accueil"):
+        if st.button("← Back to Home"):
             st.session_state.current_page = "home"
             st.rerun()
-
-
 
 def display_home():
 
@@ -2247,10 +2722,10 @@ def display_home():
         unsafe_allow_html=True
     )
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
 
-        st.subheader("⚽ Offensive Analysis")
+        st.subheader("⚽ Offensive")
 
         st.caption(
             "Shooting performance, xG, shot distribution "
@@ -2267,7 +2742,7 @@ def display_home():
 
     with col2:
 
-        st.subheader("📈 Progression Analysis")
+        st.subheader("📈 Progression")
 
         st.caption(
             "Progressive passes, carries, final third entries "
@@ -2284,7 +2759,7 @@ def display_home():
 
     with col3:
 
-        st.subheader("🛡️ Defensive Analysis")
+        st.subheader("🛡️ Defensive")
 
         st.caption(
             "Interceptions, tackles, pressures, recoveries, "
@@ -2299,6 +2774,22 @@ def display_home():
             st.session_state.current_page = "defensive"
             st.rerun()
 
+    with col4:
+
+        st.subheader("🔗 Collective")
+
+        st.caption(
+            "Pass networks, player heatmaps, space occupation, "
+            "attack creations and patterns."
+        )
+
+        if st.button(
+            "Open Collective Analysis",
+            use_container_width=True
+        ):
+
+            st.session_state.current_page = "collective"
+            st.rerun()
 
 # =========================================
 # APPLICATION NAVIGATION
@@ -2318,17 +2809,16 @@ elif st.session_state.current_page == "offensive":
 
     try:
 
-        with st.spinner("Calcul de l'analyse offensive..."):
+        with st.spinner("Calculating offensive analysis..."):
             results = load_offensive_analysis()
 
     except Exception as error:
 
         st.error(
-            f"Impossible de charger l'analyse offensive : {error}"
+            f"Unable to load offensive analysis: {error}"
         )
 
         st.stop()
-
 
     # =========================================
     # 1. OFFENSIVE INDICATORS
@@ -2377,11 +2867,9 @@ elif st.session_state.current_page == "offensive":
 
     else:
 
-        st.info("Aucun indicateur offensif disponible.")
-
+        st.info("No offensive indicators available.")
 
     st.divider()
-
 
     # =========================================
     # 2. SHOT DISTRIBUTION
@@ -2415,8 +2903,7 @@ elif st.session_state.current_page == "offensive":
 
     else:
 
-        st.info("Aucune donnée de répartition des tirs disponible.")
-
+        st.info("No shot distribution data available.")
 
     # =========================================
     # 3. ASSIST ANALYSIS
@@ -2441,8 +2928,7 @@ elif st.session_state.current_page == "offensive":
 
     else:
 
-        st.info("Aucune donnée sur les passes associées aux tirs.")
-
+        st.info("No shot-assisted pass data available.")
 
     # =========================================
     # FOOTER
@@ -2459,9 +2945,6 @@ elif st.session_state.current_page == "offensive":
         f"Team ID: {TEAM_ID} | Database: {DB_PATH.name}"
     )
 
-    pass
-
-
 elif st.session_state.current_page == "progression":
 
     display_progression_analysis()
@@ -2469,3 +2952,7 @@ elif st.session_state.current_page == "progression":
 elif st.session_state.current_page == "defensive":
 
     display_defensive_analysis()
+
+elif st.session_state.current_page == "collective":
+
+    display_collective_analysis()

@@ -7,6 +7,13 @@ DB_PATH = ROOT_DIR / "database" / "football.duckdb"
 
 APP_TITLE = "Football Intelligence Platform"
 
+# Shared application settings
+CACHE_TTL_SECONDS = 300
+
+# StatsBomb pitch coordinate system
+PITCH_LENGTH = 120
+PITCH_WIDTH = 80
+
 TEAM_ID = 129
 TEAM_NAME = "AS Monaco"
 
