@@ -5,6 +5,73 @@ import numpy as np
 
 MONACO_TEAM_ID = 129
 
+
+
+def build_match_names(events):
+    """
+    Build a stable match_id -> match_name lookup.
+
+    Prefer Starting XI events to determine home/away order. If those
+    events are unavailable, fall back to the first two distinct teams
+    observed in the match events.
+    """
+    required = {"match_id", "team_name"}
+    missing = required.difference(events.columns)
+    if missing:
+        raise ValueError(f"Missing columns to build match names: {sorted(missing)}")
+
+    if events.empty:
+        return pd.DataFrame(columns=["match_id", "match_name"])
+
+    ordered = events.copy()
+    if "index" in ordered.columns:
+        ordered = ordered.sort_values(["match_id", "index"])
+    else:
+        ordered = ordered.sort_values("match_id")
+
+    if "type" in ordered.columns:
+        starting_xi = ordered[
+            ordered["type"].astype("string").str.strip().str.casefold()
+            == "starting xi"
+        ].copy()
+    else:
+        starting_xi = pd.DataFrame()
+
+    # Keep one row per team and match while preserving event order.
+    if not starting_xi.empty:
+        team_rows = starting_xi[["match_id", "team_name"]].dropna()
+        team_rows = team_rows.drop_duplicates(["match_id", "team_name"])
+    else:
+        team_rows = pd.DataFrame(columns=["match_id", "team_name"])
+
+    # Fallback for matches with missing/incomplete Starting XI events.
+    fallback = ordered[["match_id", "team_name"]].dropna()
+    fallback = fallback.drop_duplicates(["match_id", "team_name"])
+
+    match_ids = ordered["match_id"].dropna().drop_duplicates().tolist()
+    rows = []
+
+    for match_id in match_ids:
+        current = team_rows.loc[team_rows["match_id"] == match_id, "team_name"].tolist()
+        if len(current) < 2:
+            current = fallback.loc[
+                fallback["match_id"] == match_id, "team_name"
+            ].tolist()
+
+        if len(current) >= 2:
+            home_team, away_team = current[0], current[1]
+            match_name = f"{home_team} vs {away_team} ({match_id})"
+        elif len(current) == 1:
+            match_name = f"{current[0]} vs Unknown opponent"
+        else:
+            match_name = f"Match {match_id}"
+
+        rows.append({"match_id": match_id, "match_name": match_name})
+
+    return pd.DataFrame(rows, columns=["match_id", "match_name"])
+
+
+
 def load_events(database_path, team_id=MONACO_TEAM_ID):
     """
     Load all events from matches played by a specific team.
@@ -45,7 +112,16 @@ def load_events(database_path, team_id=MONACO_TEAM_ID):
     finally:
         connection.close()
 
+    match_names = build_match_names(events)
+
+    events = events.merge(
+        match_names,
+        on="match_id",
+        how="left"
+    )
+
     return events
+
 
 def _valid_coordinates(df, x_col="location_x", y_col="location_y"):
     """Keeps only events with valid coordinates."""
@@ -506,10 +582,10 @@ def calculate_shot_metrics(shots):
     )
 
     return {
-        "total_shots": total_shots,
-        "matches": matches,
-        "shots_per_match": (
-            total_shots / matches if matches else 0
+        "number of matches": matches,
+        "number of shots": total_shots,
+        "shots per match": (
+            round(total_shots / matches, 2) if matches else 0
         ),
         "total_xg": total_xg,
         "average_xg": average_xg,
@@ -606,10 +682,11 @@ def analyze_shot_zones(shots):
 
     return summary
 
+
 def analyze_shot_assists(events, shots):
     """
     Link passes to shots using assisted_shot_id.
-    Return descriptive information without IDs.
+    Include match ID, match name and shot minute.
     """
 
     passes = events[
@@ -632,20 +709,26 @@ def analyze_shot_assists(events, shots):
         "player_name": "passer_name"
     })
 
-    shot_columns = shots[
-        [
-            "event_id",
-            "match_id",
-            "team_id",
-            "player_name",
-            "statsbomb_xg",
-            "outcome_name"
-        ]
-    ].rename(columns={
+    # Keep optional shot information when available
+    shot_fields = [
+        "event_id",
+        "match_id",
+        "team_id",
+        "player_name",
+        "statsbomb_xg",
+        "outcome_name"
+    ]
+
+    for optional_field in ["match_name", "minute"]:
+        if optional_field in shots.columns:
+            shot_fields.append(optional_field)
+
+    shot_columns = shots[shot_fields].rename(columns={
         "event_id": "shot_event_id",
         "match_id": "shot_match_id",
         "team_id": "shot_team_id",
-        "player_name": "shooter_name"
+        "player_name": "shooter_name",
+        "minute": "shot_minute"
     })
 
     linked = pass_columns.merge(
@@ -660,18 +743,29 @@ def analyze_shot_assists(events, shots):
         & (linked["pass_team_id"] == linked["shot_team_id"])
     ].copy()
 
-    # Keep only descriptive columns
-    linked = linked[
-        [
-            "pass_match_id",
-            "passer_name",
-            "shooter_name",
-            "statsbomb_xg",
-            "outcome_name"
-        ]
+    # Final display columns
+    display_columns = [
+        "passer_name",
+        "shooter_name",
+        "statsbomb_xg",
+        "outcome_name"
     ]
 
+    # Add match name and shot minute
+    if "match_name" in linked.columns:
+        display_columns.insert(0, "match_name")
+
+    if "shot_minute" in linked.columns:
+        display_columns.insert(1, "shot_minute")
+
+    linked = linked[display_columns].rename(columns={
+        "statsbomb_xg": "shot_xg",
+        "outcome_name": "shot_outcome"
+    })
+
     return linked
+
+
 
 def analyze_progressive_passes(passes, team_id=MONACO_TEAM_ID):
     """
@@ -1088,7 +1182,10 @@ def analyze_recovery_zones(recoveries, team_id):
 
     zones = (
         team_recoveries
-        .groupby("location_bucket", dropna=False)
+        .assign(
+            location_bucket=team_recoveries["location_bucket"].fillna("Unknown")
+        )
+        .groupby("location_bucket")
         .size()
         .reset_index(name="recoveries")
         .sort_values("recoveries", ascending=False)
@@ -1245,8 +1342,15 @@ def calculate_ppda(events, team_id, halfway_line=60):
             if actions_count > 0 else None
         )
 
+        match_name = None
+        if "match_name" in data.columns:
+            names = data.loc[data["match_id"] == match_id, "match_name"].dropna()
+            if not names.empty:
+                match_name = names.iloc[0]
+
         results.append({
             "match_id": match_id,
+            "match_name": match_name or f"Match {match_id}",
             "opponent_passes": passes_count,
             "defensive_actions": actions_count,
             "ppda": ppda
@@ -1256,6 +1360,7 @@ def calculate_ppda(events, team_id, halfway_line=60):
         results,
         columns=[
             "match_id",
+            "match_name",
             "opponent_passes",
             "defensive_actions",
             "ppda"
@@ -1469,6 +1574,16 @@ def analyze_pass_network(passes):
         .fillna(0)
         .astype(int)
     )
+
+    # Restore the human-readable match label after groupby aggregations.
+    if "match_name" in successful.columns:
+        match_lookup = (
+            successful[["match_id", "match_name"]]
+            .dropna(subset=["match_id"])
+            .drop_duplicates(subset=["match_id"])
+        )
+        nodes = nodes.merge(match_lookup, on="match_id", how="left")
+        edges = edges.merge(match_lookup, on="match_id", how="left")
 
     # 8. General summary
     summary = {
@@ -1891,8 +2006,16 @@ def analyze_attacking_patterns(team_events):
         if actions:
             sequences.append({
                 "match_id": match_id,
-                "period": period,
-                "possession": possession,
+                "match_name": (
+                    group["match_name"].iloc[0]
+                    if "match_name" in group.columns
+                    else str(match_id)
+                ),
+                "minute": (
+                    group["minute"].min()
+                    if "minute" in group.columns
+                    else None
+                ),
                 "actions_count": len(actions),
                 "sequence": " | ".join(actions),
             })
@@ -1909,7 +2032,7 @@ def analyze_attacking_patterns(team_events):
 
     combinations = (
         passes.groupby(
-            ["player_name", "pass_recipient_name"],
+            ["match_id", "player_name", "pass_recipient_name"],
             as_index=False,
         )
         .size()

@@ -142,6 +142,7 @@ st.markdown(
 # SHOT ZONE LEGEND
 # =========================================
 
+
 def display_shot_zone_legend(zones_df):
 
     if zones_df.empty:
@@ -149,32 +150,80 @@ def display_shot_zone_legend(zones_df):
         return
 
     zone_styles = {
-        "outside penalty area": {
-            "color": "#F0A43A",
-            "description": "Area outside the penalty box."
-        },
-        "central outside area": {
-            "color": "#F5CB78",
-            "description": "Central channel in front of the penalty box."
+        "central penalty area": {
+            "color": "#159B72",
+            "description": "Central area inside the penalty box."
         },
         "penalty area": {
             "color": "#3976B9",
             "description": "Entire penalty area."
         },
-        "central penalty area": {
-            "color": "#159B72",
-            "description": "Central area inside the penalty box."
+        "central outside area": {
+            "color": "#F5CB78",
+            "description": "Central channel in front of the penalty box."
+        },
+        "outside penalty area": {
+            "color": "#F0A43A",
+            "description": "Area outside the penalty box."
         }
     }
 
+    # 1. COLOR LEGEND
+    legend_columns = st.columns(4)
+
+    for index, (zone_name, style) in enumerate(zone_styles.items()):
+        with legend_columns[index]:
+            st.markdown(
+                f"""
+                <div style="
+                    display:flex;
+                    align-items:center;
+                    gap:8px;
+                    margin-bottom:15px;
+                ">
+                    <div style="
+                        width:18px;
+                        height:18px;
+                        min-width:18px;
+                        background-color:{style['color']};
+                        border:1px solid #999;
+                        border-radius:3px;
+                    "></div>
+                    <span style="font-size:12px;">
+                        {zone_name.title()}
+                    </span>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+    st.divider()
+
+    # 2. DETAILED SHOT ZONE INFORMATION
     st.markdown("### Shot distribution by zone")
+
+    zone_order = [
+        "central penalty area",
+        "penalty area",
+        "central outside area",
+        "outside penalty area"
+    ]
+
+    zones_by_name = {
+        str(row["shot_zone"]).strip().casefold(): row
+        for _, row in zones_df.iterrows()
+    }
 
     columns = st.columns(2)
 
-    for index, row in zones_df.iterrows():
+    for index, zone_name in enumerate(zone_order):
 
-        zone_name = str(row["shot_zone"]).strip()
-        zone_key = zone_name.casefold()
+        row = zones_by_name.get(zone_name)
+
+        if row is None:
+            continue
+
+        zone_key = zone_name
 
         total_shots = int(row["total_shots"])
         percentage = float(row["shot_percentage"])
@@ -191,7 +240,29 @@ def display_shot_zone_legend(zones_df):
 
         with columns[index % 2]:
 
-            st.markdown(f"### {zone_name.title()}")
+            # Zone title with matching color
+            st.markdown(
+                f"""
+                <div style="
+                    display:flex;
+                    align-items:center;
+                    gap:9px;
+                    margin-bottom:5px;
+                ">
+                    <div style="
+                        width:15px;
+                        height:15px;
+                        min-width:15px;
+                        background-color:{style['color']};
+                        border-radius:3px;
+                    "></div>
+                    <h3 style="margin:0;">
+                        {zone_name.title()}
+                    </h3>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 
             st.caption(style["description"])
 
@@ -213,9 +284,6 @@ def display_shot_zone_legend(zones_df):
                 f"Average xG: {average_xg:.3f}"
             )
 
-# =========================================
-# FOOTBALL PITCH
-# =========================================
 
 # =========================================
 # SHARED FOOTBALL PITCH
@@ -466,10 +534,14 @@ def create_between_lines_pitch():
 def create_defensive_pitch():
     return add_football_pitch(go.Figure(), height=600, show_legend=True)
 
+
+
 def add_progressive_passes_to_pitch(fig, passes):
 
     if passes is None or passes.empty:
         return fig
+
+    PITCH_WIDTH = 80
 
     required_columns = [
         "location_x",
@@ -491,14 +563,29 @@ def add_progressive_passes_to_pitch(fig, passes):
         subset=required_columns
     ).copy()
 
+    if "pass_recipient_name" not in valid.columns:
+        valid["pass_recipient_name"] = "Unknown"
+    else:
+        valid["pass_recipient_name"] = (
+            valid["pass_recipient_name"].fillna("Unknown")
+        )
+
     if valid.empty:
         return fig
+
+    # Inversion verticale uniquement
+    valid["display_start_y"] = (
+        PITCH_WIDTH - valid["location_y"]
+    )
+    valid["display_end_y"] = (
+        PITCH_WIDTH - valid["end_location_y"]
+    )
 
     # One trace for all pass origins
     fig.add_trace(
         go.Scatter(
             x=valid["location_x"],
-            y=valid["location_y"],
+            y=valid["display_start_y"],
             mode="markers",
             marker=dict(
                 size=5,
@@ -512,13 +599,15 @@ def add_progressive_passes_to_pitch(fig, passes):
             customdata=valid[
                 [
                     "end_location_x",
-                    "end_location_y"
+                    "display_end_y",
+                    "pass_recipient_name"
                 ]
             ],
             hovertemplate=(
-                "<b>%{text}</b><br>"
-                "Start: (%{x:.1f}, %{y:.1f})<br>"
-                "End: (%{customdata[0]:.1f}, "
+                "<b>Passeur : %{text}</b><br>"
+                "Receveur : %{customdata[2]}<br>"
+                "Départ : (%{x:.1f}, %{y:.1f})<br>"
+                "Arrivée : (%{customdata[0]:.1f}, "
                 "%{customdata[1]:.1f})"
                 "<extra>Progressive Pass</extra>"
             ),
@@ -539,8 +628,8 @@ def add_progressive_passes_to_pitch(fig, passes):
         ])
 
         ys.extend([
-            row["location_y"],
-            row["end_location_y"],
+            row["display_start_y"],
+            row["display_end_y"],
             None
         ])
 
@@ -561,10 +650,13 @@ def add_progressive_passes_to_pitch(fig, passes):
 
     return fig
 
+
 def add_progressive_carries_to_pitch(fig, carries):
 
     if carries is None or carries.empty:
         return fig
+
+    PITCH_WIDTH = 80
 
     required_columns = [
         "location_x",
@@ -589,11 +681,12 @@ def add_progressive_carries_to_pitch(fig, carries):
 
     for _, row in valid_carries.iterrows():
 
+        # Inversion verticale uniquement
         start_x = row["location_x"]
-        start_y = row["location_y"]
+        start_y = PITCH_WIDTH - row["location_y"]
 
         end_x = row["end_location_x"]
-        end_y = row["end_location_y"]
+        end_y = PITCH_WIDTH - row["end_location_y"]
 
         player = row.get(
             "player_name",
@@ -610,7 +703,7 @@ def add_progressive_carries_to_pitch(fig, carries):
                     width=2
                 ),
                 marker=dict(
-                    size=[5, 7],
+                    size=[5, 12],
                     color="#159B72",
                     symbol=["circle", "triangle-up"]
                 ),
@@ -618,19 +711,25 @@ def add_progressive_carries_to_pitch(fig, carries):
                 showlegend=False,
                 hovertemplate=(
                     f"<b>{player}</b><br>"
-                    f"Start: ({start_x:.1f}, {start_y:.1f})"
-                    f"<br>End: ({end_x:.1f}, {end_y:.1f})"
+                    f"Départ : ({start_x:.1f}, {start_y:.1f})"
+                    f"<br>Arrivée : ({end_x:.1f}, {end_y:.1f})"
                     "<extra>Progressive Carry</extra>"
-                )
+                ),
+                hoveron="points"
             )
         )
 
     return fig
 
+
+
+
 def add_final_third_passes_to_pitch(fig, passes):
 
     if passes is None or passes.empty:
         return fig
+
+    PITCH_WIDTH = 80
 
     required_columns = [
         "location_x",
@@ -652,6 +751,14 @@ def add_final_third_passes_to_pitch(fig, passes):
         subset=required_columns
     ).copy()
 
+    # Add receiver name
+    if "pass_recipient_name" not in valid_passes.columns:
+        valid_passes["pass_recipient_name"] = "Unknown"
+    else:
+        valid_passes["pass_recipient_name"] = (
+            valid_passes["pass_recipient_name"].fillna("Unknown")
+        )
+
     # Keep passes ending in the final third
     valid_passes = valid_passes[
         valid_passes["end_location_x"].between(80, 120)
@@ -659,6 +766,14 @@ def add_final_third_passes_to_pitch(fig, passes):
 
     if valid_passes.empty:
         return fig
+
+    # Inversion verticale uniquement
+    valid_passes["display_start_y"] = (
+        PITCH_WIDTH - valid_passes["location_y"]
+    )
+    valid_passes["display_end_y"] = (
+        PITCH_WIDTH - valid_passes["end_location_y"]
+    )
 
     # Build all trajectories in one trace
     xs = []
@@ -673,8 +788,8 @@ def add_final_third_passes_to_pitch(fig, passes):
         ])
 
         ys.extend([
-            row["location_y"],
-            row["end_location_y"],
+            row["display_start_y"],
+            row["display_end_y"],
             None
         ])
 
@@ -697,7 +812,7 @@ def add_final_third_passes_to_pitch(fig, passes):
     fig.add_trace(
         go.Scatter(
             x=valid_passes["end_location_x"],
-            y=valid_passes["end_location_y"],
+            y=valid_passes["display_end_y"],
             mode="markers",
             marker=dict(
                 size=5,
@@ -711,9 +826,13 @@ def add_final_third_passes_to_pitch(fig, passes):
                     index=valid_passes.index
                 )
             ),
+            customdata=valid_passes[
+                ["pass_recipient_name"]
+            ],
             hovertemplate=(
-                "<b>%{text}</b><br>"
-                "Reception: (%{x:.1f}, %{y:.1f})"
+                "<b>Passeur : %{text}</b><br>"
+                "Receveur : %{customdata[0]}<br>"
+                "Réception : (%{x:.1f}, %{y:.1f})"
                 "<extra>Final Third Entry</extra>"
             ),
             showlegend=False
@@ -721,6 +840,9 @@ def add_final_third_passes_to_pitch(fig, passes):
     )
 
     return fig
+
+
+
 
 def add_between_lines_heatmap(fig, receptions):
 
@@ -1020,6 +1142,60 @@ def get_defensive_events(results):
 
     return pd.concat(frames, ignore_index=True)
 
+
+
+def build_match_selector_options(dataframe):
+    """
+    Return match IDs sorted from smallest to largest, with labels that
+    always include the match ID in parentheses.
+    """
+    if not isinstance(dataframe, pd.DataFrame) or dataframe.empty:
+        return [], {}
+
+    if "match_id" not in dataframe.columns:
+        return [], {}
+
+    columns = ["match_id"]
+    if "match_name" in dataframe.columns:
+        columns.append("match_name")
+
+    matches = (
+        dataframe[columns]
+        .dropna(subset=["match_id"])
+        .drop_duplicates("match_id")
+        .copy()
+    )
+
+    if "match_name" not in matches.columns:
+        matches["match_name"] = matches["match_id"].map(
+            lambda value: f"Match {value}"
+        )
+    else:
+        matches["match_name"] = matches["match_name"].fillna(
+            matches["match_id"].map(lambda value: f"Match {value}")
+        ).astype(str)
+
+    # Numeric IDs are sorted numerically (1, 2, 10), not alphabetically.
+    matches["_numeric_match_id"] = pd.to_numeric(
+        matches["match_id"], errors="coerce"
+    )
+    matches["_text_match_id"] = matches["match_id"].astype(str)
+    matches = matches.sort_values(
+        ["_numeric_match_id", "_text_match_id"],
+        ascending=[True, True],
+        na_position="last",
+        kind="stable"
+    )
+
+    # Always show the ID, including when match names are unique.
+    matches["display_label"] = (
+        matches["match_name"].astype(str)
+    )
+
+    labels_by_id = dict(zip(matches["match_id"], matches["display_label"]))
+    return matches["match_id"].tolist(), labels_by_id
+
+
 def display_progression_filters(results):
 
     passes = results.get(
@@ -1054,7 +1230,6 @@ def display_progression_filters(results):
     )
 
     with col1:
-
         selected_player = st.selectbox(
             "Select player",
             options=["All players"] + players,
@@ -1062,48 +1237,30 @@ def display_progression_filters(results):
             key="progression_player_filter"
         )
 
-    # Match filter
-    matches = (
-        sorted(
-            combined["match_id"]
-            .dropna()
-            .unique()
-            .tolist(),
-            key=str,
-            reverse=True
-        )
-        if "match_id" in combined.columns
-        else []
-    )
-
-    match_options = ["All matches"] + matches
+    # Display match names, but keep the selected match_id for filtering.
+    match_ids, match_labels = build_match_selector_options(combined)
 
     with col2:
-
-        selected_match = st.selectbox(
+        match_id = st.selectbox(
             "Select match",
-            options=match_options,
-            index=1 if matches else 0,
-            format_func=lambda x: (
-                "All matches" if x == "All matches"
-                else f"Match {x}"
+            options=[None] + match_ids,
+            format_func=lambda value: (
+                "All matches" if value is None
+                else match_labels.get(value, f"Match {value}")
             ),
-            key="progression_match_filter"
+            index=1 if match_ids else 0,
+            key="progression_match_filter_v2"
         )
 
+    # Convert "All players" to None
     player = (
         None
         if selected_player == "All players"
         else selected_player
     )
 
-    match_id = (
-        None
-        if selected_match == "All matches"
-        else selected_match
-    )
-
     return player, match_id
+
 
 def display_final_third_analysis(
     results,
@@ -1239,23 +1396,17 @@ def display_defensive_filters(results):
 
     with col2:
 
-        matches = (
-            sorted(
-                combined["match_id"].dropna().unique().tolist(),
-                key=str,
-                reverse=True
-            )
-            if "match_id" in combined.columns
-            else []
-        )
-
-        match_options = ["All matches"] + matches
+        match_ids, match_labels = build_match_selector_options(combined)
 
         selected_match = st.selectbox(
             "Select match",
-            options=match_options,
-            index=1 if matches else 0,
-            key="defensive_match_filter"
+            options=[None] + match_ids,
+            format_func=lambda value: (
+                "All matches" if value is None
+                else match_labels.get(value, f"Match {value}")
+            ),
+            index=1 if match_ids else 0,
+            key="defensive_match_filter_v2"
         )
 
     player = (
@@ -1263,10 +1414,7 @@ def display_defensive_filters(results):
         else selected_player
     )
 
-    match_id = (
-        None if selected_match == "All matches"
-        else selected_match
-    )
+    match_id = selected_match
 
     return player, match_id
 
@@ -1468,6 +1616,14 @@ def display_ppda(results):
     if {"match_id", "ppda"}.issubset(matches.columns):
 
         chart_data = matches.dropna(subset=["ppda"]).copy()
+        if "match_name" not in chart_data.columns:
+            chart_data["match_name"] = chart_data["match_id"].map(
+                lambda value: f"Match {value}"
+            )
+        else:
+            chart_data["match_name"] = chart_data["match_name"].fillna(
+                chart_data["match_id"].map(lambda value: f"Match {value}")
+            )
 
         if not chart_data.empty:
 
@@ -1475,11 +1631,18 @@ def display_ppda(results):
                 chart_data["match_id"].astype(str)
             )
 
+            st.write(
+                chart_data[
+                    ["match_name", "opponent_passes",
+                    "defensive_actions", "ppda"]
+                ]
+            )
+
             fig = go.Figure()
 
             fig.add_trace(
                 go.Bar(
-                    x=chart_data["match_id"],
+                    x=chart_data["match_name"],
                     y=chart_data["ppda"],
                     marker_color="#3976B9",
                     text=chart_data["ppda"].map(
@@ -1645,6 +1808,20 @@ def display_defensive_analysis():
         unsafe_allow_html=True
     )
 
+    st.caption(
+        "PPDA (Passes Per Defensive Action) measures the number "
+        "of opposition passes completed in their own half before "
+        "the defending team performs a defensive action."
+    )
+
+    st.caption("A lower PPDA indicates more intense pressing.")
+
+    st.caption(
+        "Defensive actions included: tackles, interceptions, "
+        "and fouls committed. Pressures, blocks, and ball "
+        "recoveries are excluded."
+    )
+
     display_ppda(results)
 
     st.divider()
@@ -1658,6 +1835,7 @@ def display_defensive_analysis():
         f"Team ID: {TEAM_ID} | Database: {DB_PATH.name}"
     )
 
+
 def display_progression_kpis(results):
 
     kpi_config = [
@@ -1668,14 +1846,7 @@ def display_progression_kpis(results):
             "percentage": "progressive_passes_percentage",
             "denominator": "total_passes"
         },
-        {
-            "key": "progressive_carries",
-            "title": "Progressive Carries",
-            "count": "total_progressive_carries",
-            "percentage": "progressive_carries_percentage",
-            "denominator": "total_carries"
-        },
-        {
+                {
             "key": "final_third_passes",
             "title": "Passes into Final Third",
             "count": "total_final_third_passes",
@@ -1690,6 +1861,13 @@ def display_progression_kpis(results):
             "denominator": "total_passes"
         },
         {
+            "key": "progressive_carries",
+            "title": "Progressive Carries",
+            "count": "total_progressive_carries",
+            "percentage": "progressive_carries_percentage",
+            "denominator": "total_carries"
+        },
+        {
             "key": "between_lines_receptions",
             "title": "Between-the-Lines Receptions",
             "count": "total_between_lines_receptions",
@@ -1699,6 +1877,57 @@ def display_progression_kpis(results):
     ]
 
     st.subheader("Progression Indicators")
+
+
+    with st.expander("ℹ️ Definitions and calculation criteria"):
+
+        st.markdown("""
+        **Progressive Pass**
+
+        A pass that advances the ball towards the opponent's goal
+        by a minimum distance depending on the starting position:
+
+        - More than 50m from goal: at least 30m
+        - Between 40m and 50m from goal: at least 15m
+        - 40m or less from goal: at least 10m
+
+        Progression is measured along the length of the pitch.
+
+        ---
+
+        **Progressive Carry**
+
+        A ball carry that advances the player towards the opponent's
+        goal using the same distance thresholds:
+
+        - More than 50m from goal: at least 30m
+        - Between 40m and 50m from goal: at least 15m
+        - 40m or less from goal: at least 10m
+
+        ---
+
+        **Pass into Final Third**
+
+        A pass that starts outside the opponent's final third
+        and ends inside it.
+
+        The final third is defined as X >= 80 on a
+        StatsBomb 120 x 80 pitch.
+
+        ---
+
+        **Potential Line-Breaking Pass**
+
+        A forward pass that:
+
+        - Advances by at least 10m.
+        - Starts outside the final third (X < 80).
+        - Reaches the final third (X >= 80).
+
+        This is a geometric approximation and does not
+        identify actual defensive lines.
+        """)
+
 
     columns = st.columns(3)
 
@@ -1716,6 +1945,7 @@ def display_progression_kpis(results):
             st.error(f"Missing summary: {config['key']}")
             continue
 
+ 
         count = summary.get(config["count"])
         percentage = summary.get(config["percentage"])
         denominator = summary.get(config["denominator"])
@@ -1724,22 +1954,35 @@ def display_progression_kpis(results):
             st.error(f"Missing KPI: {config['count']}")
             continue
 
+        # Corriger les valeurs éventuellement renvoyées sous forme de tuple
+        if isinstance(percentage, (tuple, list)):
+            percentage = percentage[0] if percentage else None
+
+        # Convertir le pourcentage en nombre
+        percentage_value = None
+
+        if percentage is not None:
+            try:
+                percentage_value = float(
+                    str(percentage).replace("%", "").replace(",", ".").strip()
+                )
+            except (ValueError, TypeError):
+                percentage_value = None
+
         with columns[index % 3]:
 
             st.metric(
                 label=config["title"],
-                value=f"{int(count):,}",
-                delta=(
-                    f"{float(percentage):.2f}%"
-                    if percentage is not None
-                    else None
-                )
+                value=f"{int(count):,}"
             )
 
+            if percentage_value is not None:
+                st.caption(f"Percentage: {percentage_value:.2f}%")
+
             if denominator is not None:
-                st.caption(
-                    f"Out of {int(denominator):,} events"
-                )
+                st.caption(f"Out of {int(denominator):,} events")
+
+
 
 def display_collective_kpis(results):
 
@@ -1889,8 +2132,9 @@ def create_pass_network_pitch(network):
         fig,
         height=600,
         x_range=(0, 120),
-        y_range=(0, 80),
+        y_range=(80, 0),
     )
+
 
 def display_pass_network_filters(results):
 
@@ -1921,25 +2165,17 @@ def display_pass_network_filters(results):
 
     with col2:
 
-        matches = (
-            sorted(
-                nodes["match_id"].dropna().unique().tolist(),
-                key=str,
-                reverse=True
-            )
-            if "match_id" in nodes.columns
-            else []
-        )
+        match_ids, match_labels = build_match_selector_options(nodes)
 
         selected_match = st.selectbox(
             "Select match",
-            ["All matches"] + matches,
-            index=1 if matches else 0,
-            format_func=lambda x: (
-                "All matches" if x == "All matches"
-                else f"Match {x}"
+            [None] + match_ids,
+            index=1 if match_ids else 0,
+            format_func=lambda value: (
+                "All matches" if value is None
+                else match_labels.get(value, f"Match {value}")
             ),
-            key="pass_network_match_filter"
+            key="pass_network_match_filter_v2"
         )
 
     player = (
@@ -1947,10 +2183,7 @@ def display_pass_network_filters(results):
         else selected_player
     )
 
-    match_id = (
-        None if selected_match == "All matches"
-        else selected_match
-    )
+    match_id = selected_match
 
     return player, match_id
 
@@ -2090,21 +2323,30 @@ def display_pass_network(
     )
 
     # Strongest connections
-    if not edges.empty:
-
-        st.markdown("#### Strongest passing connections")
-
-        st.dataframe(
-            edges.sort_values(
-                "passes",
-                ascending=False
-            ).head(15),
-            use_container_width=True,
-            hide_index=True
+    strongest_connections = (
+        edges.sort_values(
+            "passes",
+            ascending=False
         )
+        .head(15)
+    )
 
-def display_player_heatmaps(results):
+    # Put match_name first and hide match_id
+    display_columns = [
+        "match_name"
+    ] + [
+        col for col in strongest_connections.columns
+        if col not in ["match_name", "match_id"]
+    ]
 
+    st.dataframe(
+        strongest_connections[display_columns],
+        use_container_width=True,
+        hide_index=True
+    )
+        
+
+def display_player_heatmaps(results, match_id=None):
     st.subheader("Player Activity Heatmaps")
 
     st.caption(
@@ -2119,6 +2361,16 @@ def display_player_heatmaps(results):
 
     events = heatmaps.get("events", pd.DataFrame())
     zones = heatmaps.get("zones", pd.DataFrame())
+
+    # Apply selected match filter
+    if match_id is not None:
+        if "match_id" not in events.columns:
+            st.warning("Match ID unavailable for heatmap filtering.")
+            return
+
+        events = events[
+            events["match_id"].astype(str) == str(match_id)
+        ].copy()
 
     if events.empty or zones.empty:
         st.info("No player activity data available.")
@@ -2165,32 +2417,72 @@ def display_player_heatmaps(results):
         subset=["location_x", "location_y"]
     )
 
+    # Recalculate activity zones using only the filtered events
+    player_events["x_bin"] = pd.cut(
+        player_events["location_x"],
+        bins=12,
+        labels=False,
+        include_lowest=True
+    )
+
+    player_events["y_bin"] = pd.cut(
+        player_events["location_y"],
+        bins=8,
+        labels=False,
+        include_lowest=True
+    )
+
+    player_zones = (
+        player_events.groupby(
+            ["x_bin", "y_bin"],
+            observed=True,
+            as_index=False
+        )
+        .size()
+        .rename(columns={"size": "events"})
+    )
+
+    player_zones["percentage"] = (
+        player_zones["events"]
+        / player_zones["events"].sum()
+        * 100
+    )
+
     if player_events.empty:
         st.info("No valid player coordinates available.")
         return
 
     fig = go.Figure()
 
-    # Activity heatmap
+    # Smooth activity heatmap
+    # Smooth activity heatmap - same style as Between-the-Lines
     fig.add_trace(
-        go.Histogram2d(
+        go.Histogram2dContour(
             x=player_events["location_x"],
             y=player_events["location_y"],
-            xbins=dict(start=0, end=120, size=5),
-            ybins=dict(start=0, end=80, size=5),
             colorscale=[
-                [0, "rgba(46,125,50,0)"],
-                [0.01, "rgba(245,203,120,0.45)"],
-                [0.35, "rgba(240,164,58,0.75)"],
-                [1, "rgba(192,57,43,0.95)"]
+                [0, "rgba(255,255,255,0)"],
+                [0.25, "#F5CB78"],
+                [0.60, "#F0A43A"],
+                [1, "#C0392B"]
             ],
-            colorbar=dict(title="Actions"),
+            contours=dict(
+                coloring="fill",
+                showlines=False
+            ),
+            line=dict(width=0),
+            showscale=True,
+            colorbar=dict(
+                title="Activity density"
+            ),
             hovertemplate=(
-                "X: %{x}<br>"
-                "Y: %{y}<br>"
+                "X: %{x:.1f}<br>"
+                "Y: %{y:.1f}<br>"
                 "Actions: %{z}"
                 "<extra></extra>"
-            )
+            ),
+            ncontours=15,
+            opacity=0.75
         )
     )
 
@@ -2213,22 +2505,8 @@ def display_player_heatmaps(results):
         key="collective_player_heatmap"
     )
 
-    st.metric(
-        "Player Actions",
-        f"{len(player_events):,}"
-    )
 
-    if not player_zones.empty:
-        st.dataframe(
-            player_zones.sort_values(
-                "events",
-                ascending=False
-            ),
-            use_container_width=True,
-            hide_index=True
-        )
-
-def display_space_occupation(results):
+def display_space_occupation(results, match_id=None):
 
     st.subheader("Space Occupation")
 
@@ -2242,15 +2520,47 @@ def display_space_occupation(results):
         return
 
     occupation = results.get("space_occupation", {})
-    if not isinstance(occupation, dict):
-        st.info("Space occupation data unavailable.")
-        return
-
     summary = occupation.get("summary", {})
-    if not isinstance(summary, dict):
-        summary = {}
+    events = occupation.get("events", pd.DataFrame()).copy()
 
-    zones = occupation.get("zones", pd.DataFrame())
+    # Apply selected match filter
+    if match_id is not None and not events.empty:
+        events = events[
+            events["match_id"].astype(str) == str(match_id)
+        ].copy()
+
+    # Recalculate zones using the filtered events
+    if not events.empty:
+        zones = (
+            events.groupby(
+                ["longitudinal_zone", "lateral_zone"],
+                observed=True,
+                as_index=False,
+            )
+            .size()
+            .rename(columns={"size": "events"})
+        )
+
+        total = zones["events"].sum()
+
+        zones["percentage"] = (
+            zones["events"] / total * 100
+            if total > 0
+            else 0
+        )
+
+        zones = zones.sort_values("events", ascending=False)
+
+        summary = {
+            "events": len(events),
+            "zones_used": len(zones),
+        }
+    else:
+        zones = pd.DataFrame()
+        summary = {
+            "events": 0,
+            "zones_used": 0,
+        }
 
     if not isinstance(zones, pd.DataFrame) or zones.empty:
         st.info("No space occupation data available.")
@@ -2475,7 +2785,8 @@ def display_chance_creation(results):
                 hide_index=True
             )
 
-def display_attacking_patterns(results):
+
+def display_attacking_patterns(results, match_id=None):
 
     st.subheader("Attacking Patterns")
 
@@ -2490,15 +2801,46 @@ def display_attacking_patterns(results):
         st.info("Attacking patterns unavailable.")
         return
 
-    summary = patterns.get("summary", {})
     combinations = patterns.get(
         "combinations",
         pd.DataFrame()
-    )
+    ).copy()
+
     sequences = patterns.get(
         "sequences",
         pd.DataFrame()
-    )
+    ).copy()
+
+    # Apply selected match filter
+    if match_id is not None:
+
+        if not combinations.empty and "match_id" in combinations.columns:
+            combinations = combinations[
+                combinations["match_id"].astype(str) == str(match_id)
+            ].copy()
+
+        if not sequences.empty and "match_id" in sequences.columns:
+            sequences = sequences[
+                sequences["match_id"].astype(str) == str(match_id)
+            ].copy()
+
+    # Keep the original overall aggregation when no match is selected
+    if (
+        match_id is None
+        and not combinations.empty
+        and "match_id" in combinations.columns
+    ):
+        combinations = (
+            combinations.groupby(
+                ["source", "target"],
+                as_index=False
+            )["passes"]
+            .sum()
+        )
+
+    # Remove internal match ID from combinations display
+    if not combinations.empty and "match_id" in combinations.columns:
+        combinations = combinations.drop(columns=["match_id"])
 
     if not combinations.empty:
 
@@ -2512,16 +2854,31 @@ def display_attacking_patterns(results):
             use_container_width=True,
             hide_index=True
         )
+    else:
+        st.info("No passing combinations for this match.")
 
     if not sequences.empty:
 
         st.markdown("#### Attacking sequences")
 
+        display_sequences = sequences[
+            [
+                "match_name",
+                "minute",
+                "actions_count",
+                "sequence"
+            ]
+        ]
+
         st.dataframe(
-            sequences.tail(20),
+            display_sequences,
             use_container_width=True,
             hide_index=True
         )
+    else:
+        st.info("No attacking sequences for this match.")
+
+
 
 def display_collective_analysis():
 
@@ -2584,8 +2941,10 @@ def display_collective_analysis():
         unsafe_allow_html=True
     )
 
-    display_player_heatmaps(results)
-
+    display_player_heatmaps(
+        results,
+        match_id=selected_match
+    )
     st.divider()
 
     # 04 — Space occupation
@@ -2594,7 +2953,10 @@ def display_collective_analysis():
         unsafe_allow_html=True
     )
 
-    display_space_occupation(results)
+    display_space_occupation(
+        results,
+        match_id=selected_match
+    )
 
     st.divider()
 
@@ -2614,7 +2976,10 @@ def display_collective_analysis():
         unsafe_allow_html=True
     )
 
-    display_attacking_patterns(results)
+    display_attacking_patterns(
+        results,
+        match_id=selected_match
+    )
 
     st.divider()
 
@@ -2837,7 +3202,7 @@ elif st.session_state.current_page == "offensive":
 
         metric_items = list(metrics.items())
 
-        columns = st.columns(min(len(metric_items), 4))
+        columns = st.columns(min(len(metric_items), 3))
 
         for index, (metric, value) in enumerate(metric_items):
 
@@ -2855,7 +3220,7 @@ elif st.session_state.current_page == "offensive":
                         display_value = f"{value:,}"
 
                     else:
-                        display_value = f"{value:.3f}"
+                        display_value = f"{value:.2f}"
 
                 else:
                     display_value = str(value)
@@ -2879,8 +3244,6 @@ elif st.session_state.current_page == "offensive":
         '<div class="section-label">02 / Shot analysis</div>',
         unsafe_allow_html=True
     )
-
-    st.subheader("Shot distribution by zone")
 
     zones = results.get("zones", pd.DataFrame())
 
