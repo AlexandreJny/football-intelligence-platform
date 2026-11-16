@@ -33,6 +33,8 @@ from src.global_analysis import (
     run_collective_analysis,
 )
 
+from database_loader import ensure_database_exists
+
 # =========================================
 # PAGE CONFIGURATION
 # =========================================
@@ -1685,11 +1687,7 @@ def display_ppda(results):
 # =========================================
 
 def _ensure_database_exists():
-    """Raise a clear error when the configured database is missing."""
-    if not DB_PATH.exists():
-        raise FileNotFoundError(
-            f"Database not found: {DB_PATH}"
-        )
+    ensure_database_exists()
 
 @st.cache_data(ttl=CACHE_TTL_SECONDS)
 def load_offensive_analysis():
